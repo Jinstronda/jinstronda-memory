@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
-import { getProviders, getBenchmarks, getModels, startRun, getCompletedRuns, type RunSummary, type PhaseId, PHASE_ORDER, type SelectionMode, type SampleType, type SamplingConfig } from "@/lib/api"
+import { getProviders, getBenchmarks, getModels, startRun, getCompletedRuns, type RunSummary, type PhaseId, PHASE_ORDER, type SelectionMode, type SampleType, type SamplingConfig, type Provider } from "@/lib/api"
 import { SingleSelect } from "@/components/single-select"
 
 type Tab = "new" | "advanced"
@@ -15,7 +15,7 @@ export default function NewRunPage() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const [providers, setProviders] = useState<{ name: string; displayName: string }[]>([])
+  const [providers, setProviders] = useState<Provider[]>([])
   const [benchmarks, setBenchmarks] = useState<{ name: string; displayName: string }[]>([])
   const [models, setModels] = useState<any>({})
   const [completedRuns, setCompletedRuns] = useState<RunSummary[]>([])
@@ -30,7 +30,7 @@ export default function NewRunPage() {
     sampleType: "consecutive" as SampleType,
     perCategory: "2",
     limit: "",
-    parallelism: {
+    concurrency: {
       default: undefined as number | undefined,
       ingest: undefined as number | undefined,
       indexing: undefined as number | undefined,
@@ -50,10 +50,28 @@ export default function NewRunPage() {
   const [editingAdvancedRunId, setEditingAdvancedRunId] = useState(false)
   const [editingJudgeModel, setEditingJudgeModel] = useState(false)
   const [editingAnsweringModel, setEditingAnsweringModel] = useState(false)
-  const [showPerformanceSettings, setShowPerformanceSettings] = useState(false)
-  const [showPerPhaseSettings, setShowPerPhaseSettings] = useState(false)
+  const [editingConcurrency, setEditingConcurrency] = useState(false)
+  const [showAdvancedConcurrencyNew, setShowAdvancedConcurrencyNew] = useState(false)
+  const [showAdvancedConcurrencyAdvanced, setShowAdvancedConcurrencyAdvanced] = useState(false)
+  const [editingPhase, setEditingPhase] = useState<string | null>(null)
   const runIdInputRef = useRef<HTMLInputElement>(null)
   const advancedRunIdInputRef = useRef<HTMLInputElement>(null)
+  const concurrencyInputRef = useRef<HTMLInputElement>(null)
+  const phaseInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
+
+  useEffect(() => {
+    if (editingConcurrency && concurrencyInputRef.current) {
+      concurrencyInputRef.current.focus()
+      concurrencyInputRef.current.select()
+    }
+  }, [editingConcurrency])
+
+  useEffect(() => {
+    if (editingPhase && phaseInputRefs.current[editingPhase]) {
+      phaseInputRefs.current[editingPhase]?.focus()
+      phaseInputRefs.current[editingPhase]?.select()
+    }
+  }, [editingPhase])
 
   useEffect(() => {
     loadOptions()
@@ -77,10 +95,19 @@ export default function NewRunPage() {
 
   useEffect(() => {
     if (advancedForm.sourceRunId && selectedSourceRun) {
+      const sourceProvider = providers.find(p => p.name === selectedSourceRun.provider)
       setForm(f => ({
         ...f,
         judgeModel: selectedSourceRun.judge,
         answeringModel: selectedSourceRun.answeringModel,
+        concurrency: {
+          default: sourceProvider?.concurrency?.default ?? 1,
+          ingest: sourceProvider?.concurrency?.ingest,
+          indexing: sourceProvider?.concurrency?.indexing,
+          search: sourceProvider?.concurrency?.search,
+          answer: sourceProvider?.concurrency?.answer,
+          evaluate: sourceProvider?.concurrency?.evaluate,
+        },
       }))
       const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, "")
       const random = Math.random().toString(36).slice(2, 6)
@@ -91,7 +118,7 @@ export default function NewRunPage() {
       setEditingJudgeModel(false)
       setEditingAnsweringModel(false)
     }
-  }, [advancedForm.sourceRunId, selectedSourceRun])
+  }, [advancedForm.sourceRunId, selectedSourceRun, providers])
 
   useEffect(() => {
     setEditingJudgeModel(false)
@@ -111,6 +138,24 @@ export default function NewRunPage() {
   const canChangeJudgeModel = ["indexing", "search", "answer", "evaluate"].includes(advancedForm.fromPhase)
   const canChangeAnsweringModel = ["indexing", "search", "answer"].includes(advancedForm.fromPhase)
 
+  const selectedProvider = providers.find(p => p.name === form.provider)
+
+  useEffect(() => {
+    if (selectedProvider) {
+      setForm(f => ({
+        ...f,
+        concurrency: {
+          default: selectedProvider.concurrency?.default ?? 1,
+          ingest: selectedProvider.concurrency?.ingest,
+          indexing: selectedProvider.concurrency?.indexing,
+          search: selectedProvider.concurrency?.search,
+          answer: selectedProvider.concurrency?.answer,
+          evaluate: selectedProvider.concurrency?.evaluate,
+        },
+      }))
+    }
+  }, [form.provider, providers])
+
   async function loadOptions() {
     try {
       const [providersRes, benchmarksRes, modelsRes, runsRes] = await Promise.all([
@@ -125,7 +170,20 @@ export default function NewRunPage() {
       setCompletedRuns(runsRes)
 
       if (providersRes.providers.length > 0) {
-        setForm(f => ({ ...f, provider: providersRes.providers[0].name }))
+        const firstProvider = providersRes.providers[0]
+        const defaultConcurrency = firstProvider.concurrency?.default ?? 1
+        setForm(f => ({
+          ...f,
+          provider: firstProvider.name,
+          concurrency: {
+            default: defaultConcurrency,
+            ingest: firstProvider.concurrency?.ingest,
+            indexing: firstProvider.concurrency?.indexing,
+            search: firstProvider.concurrency?.search,
+            answer: firstProvider.concurrency?.answer,
+            evaluate: firstProvider.concurrency?.evaluate,
+          },
+        }))
       }
       if (benchmarksRes.benchmarks.length > 0) {
         setForm(f => ({ ...f, benchmark: benchmarksRes.benchmarks[0].name }))
@@ -193,20 +251,24 @@ export default function NewRunPage() {
     }
     console.log("Submitting with sampling config:", sampling)
 
-    const parallelism = (form.parallelism.default !== undefined ||
-                          form.parallelism.ingest !== undefined ||
-                          form.parallelism.indexing !== undefined ||
-                          form.parallelism.search !== undefined ||
-                          form.parallelism.answer !== undefined ||
-                          form.parallelism.evaluate !== undefined)
+    // Only send concurrency if not all defaults (1)
+    const hasNonDefaultConcurrency =
+      (form.concurrency.default !== undefined && form.concurrency.default !== 1) ||
+      form.concurrency.ingest !== undefined ||
+      form.concurrency.indexing !== undefined ||
+      form.concurrency.search !== undefined ||
+      form.concurrency.answer !== undefined ||
+      form.concurrency.evaluate !== undefined
+
+    const concurrency = hasNonDefaultConcurrency
       ? {
-          ...(form.parallelism.default !== undefined && { default: form.parallelism.default }),
-          ...(form.parallelism.ingest !== undefined && { ingest: form.parallelism.ingest }),
-          ...(form.parallelism.indexing !== undefined && { indexing: form.parallelism.indexing }),
-          ...(form.parallelism.search !== undefined && { search: form.parallelism.search }),
-          ...(form.parallelism.answer !== undefined && { answer: form.parallelism.answer }),
-          ...(form.parallelism.evaluate !== undefined && { evaluate: form.parallelism.evaluate }),
-        }
+        ...(form.concurrency.default !== undefined && { default: form.concurrency.default }),
+        ...(form.concurrency.ingest !== undefined && { ingest: form.concurrency.ingest }),
+        ...(form.concurrency.indexing !== undefined && { indexing: form.concurrency.indexing }),
+        ...(form.concurrency.search !== undefined && { search: form.concurrency.search }),
+        ...(form.concurrency.answer !== undefined && { answer: form.concurrency.answer }),
+        ...(form.concurrency.evaluate !== undefined && { evaluate: form.concurrency.evaluate }),
+      }
       : undefined
 
     try {
@@ -220,7 +282,7 @@ export default function NewRunPage() {
         judgeModel,
         answeringModel,
         sampling,
-        parallelism,
+        concurrency,
         force: activeTab === "new",
         fromPhase,
         sourceRunId,
@@ -266,7 +328,23 @@ export default function NewRunPage() {
       <div className="flex gap-0 mb-6">
         <button
           type="button"
-          onClick={() => setActiveTab("new")}
+          onClick={() => {
+            setActiveTab("new")
+            setAdvancedForm({ sourceRunId: "", newRunId: "", fromPhase: "search" })
+            if (selectedProvider) {
+              setForm(f => ({
+                ...f,
+                concurrency: {
+                  default: selectedProvider.concurrency?.default ?? 1,
+                  ingest: selectedProvider.concurrency?.ingest,
+                  indexing: selectedProvider.concurrency?.indexing,
+                  search: selectedProvider.concurrency?.search,
+                  answer: selectedProvider.concurrency?.answer,
+                  evaluate: selectedProvider.concurrency?.evaluate,
+                },
+              }))
+            }
+          }}
           className="px-4 py-2 text-sm font-medium transition-colors rounded-l border"
           style={{
             fontFamily: "'Space Grotesk', sans-serif",
@@ -352,7 +430,7 @@ export default function NewRunPage() {
                     Start From Phase
                   </label>
                   <div className="flex gap-0">
-                    {PHASE_ORDER.map((phase, index) => {
+                    {PHASE_ORDER.map((phase) => {
                       const isSelected = advancedForm.fromPhase === phase
                       const isDisabled = phase === "ingest"
                       return (
@@ -390,34 +468,38 @@ export default function NewRunPage() {
                   <div className="grid grid-cols-2 gap-x-8 gap-y-2">
                     <div className="text-base"><span className="text-text-muted">Provider:</span> <span className="text-text-primary font-medium">{selectedSourceRun?.provider}</span></div>
                     <div className="text-base"><span className="text-text-muted">Benchmark:</span> <span className="text-text-primary font-medium">{selectedSourceRun?.benchmark}</span></div>
-                    <div className="text-base">
+                    <div className="text-base flex items-center gap-1">
                       <span className="text-text-muted">Judge:</span>{" "}
-                      <span className="text-text-primary font-medium">{form.judgeModel}</span>
-                      {canChangeJudgeModel && (
+                      {canChangeJudgeModel ? (
                         <button
                           type="button"
                           onClick={() => setEditingJudgeModel(!editingJudgeModel)}
-                          className="ml-2 text-text-muted hover:text-text-primary transition-colors"
+                          className="flex items-center gap-2 text-text-primary font-medium hover:text-accent transition-colors cursor-pointer"
                         >
-                          <svg className="w-3.5 h-3.5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <span>{form.judgeModel}</span>
+                          <svg className="w-3.5 h-3.5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                           </svg>
                         </button>
+                      ) : (
+                        <span className="text-text-primary font-medium">{form.judgeModel}</span>
                       )}
                     </div>
-                    <div className="text-base">
+                    <div className="text-base flex items-center gap-1">
                       <span className="text-text-muted">Answering:</span>{" "}
-                      <span className="text-text-primary font-medium">{form.answeringModel}</span>
-                      {canChangeAnsweringModel && (
+                      {canChangeAnsweringModel ? (
                         <button
                           type="button"
                           onClick={() => setEditingAnsweringModel(!editingAnsweringModel)}
-                          className="ml-2 text-text-muted hover:text-text-primary transition-colors"
+                          className="flex items-center gap-2 text-text-primary font-medium hover:text-accent transition-colors cursor-pointer"
                         >
-                          <svg className="w-3.5 h-3.5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <span>{form.answeringModel}</span>
+                          <svg className="w-3.5 h-3.5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
                           </svg>
                         </button>
+                      ) : (
+                        <span className="text-text-primary font-medium">{form.answeringModel}</span>
                       )}
                     </div>
                   </div>
@@ -465,84 +547,98 @@ export default function NewRunPage() {
                 </div>
 
                 <div className="mt-6 pt-4 border-t border-[#333333]">
-                  <button
-                    type="button"
-                    onClick={() => setShowPerformanceSettings(!showPerformanceSettings)}
-                    className="flex items-center gap-2 text-sm font-medium text-text-primary mb-3 hover:text-accent transition-colors"
-                  >
-                    <svg className={`w-4 h-4 transition-transform ${showPerformanceSettings ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                    Performance Settings
-                  </button>
-
-                  {showPerformanceSettings && (
-                    <div className="ml-6 space-y-3 p-4 bg-[#1a1a1a] border border-[#333333] rounded">
-                      <p className="text-xs text-text-muted">
-                        Configure parallelism for this run. Leave empty to use source run settings or provider defaults.
-                      </p>
-
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-sm font-medium text-text-primary mb-2">
-                            Default Parallelism
-                          </label>
+                  <div className="flex items-center justify-between h-8">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-text-primary">Concurrent requests{!showAdvancedConcurrencyAdvanced && ":"}</span>
+                      {!showAdvancedConcurrencyAdvanced && (
+                        editingConcurrency ? (
                           <input
+                            ref={concurrencyInputRef}
                             type="number"
-                            className="w-full px-3 py-2 text-sm bg-[#222222] border border-[#444444] rounded text-text-primary focus:outline-none focus:border-accent"
-                            value={form.parallelism.default ?? ""}
+                            className="w-16 px-2 py-0.5 text-sm bg-[#222222] border border-[#444444] rounded text-text-primary focus:outline-none focus:border-accent"
+                            value={form.concurrency.default ?? ""}
                             onChange={(e) => setForm({
                               ...form,
-                              parallelism: { ...form.parallelism, default: e.target.value ? parseInt(e.target.value) : undefined }
+                              concurrency: { ...form.concurrency, default: e.target.value ? parseInt(e.target.value) : undefined }
                             })}
-                            placeholder="1 (sequential)"
+                            onBlur={() => setEditingConcurrency(false)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" || e.key === "Escape") {
+                                setEditingConcurrency(false)
+                              }
+                            }}
                             min="1"
                           />
-                          <p className="text-xs text-text-muted mt-1">Applies to all phases unless overridden</p>
-                        </div>
-
-                        <div className="flex items-end">
+                        ) : (
                           <button
                             type="button"
-                            onClick={() => setShowPerPhaseSettings(!showPerPhaseSettings)}
-                            className="text-sm text-accent hover:text-accent/80 transition-colors mb-2"
+                            className="flex items-center gap-2 text-sm text-text-primary hover:text-accent transition-colors cursor-pointer"
+                            onClick={() => setEditingConcurrency(true)}
                           >
-                            {showPerPhaseSettings ? "Hide" : "Show"} per-phase settings
+                            <span className="font-medium">{form.concurrency.default ?? 1}</span>
+                            <svg className="w-3.5 h-3.5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                            </svg>
                           </button>
-                        </div>
-                      </div>
-
-                      {showPerPhaseSettings && (
-                        <div className="grid grid-cols-3 gap-3 pt-2 border-t border-[#333333]">
-                          {(["ingest", "indexing", "search", "answer", "evaluate"] as const).map(phase => (
-                            <div key={phase}>
-                              <label className="block text-xs font-medium text-text-secondary mb-1 capitalize">
-                                {phase}
-                              </label>
-                              <input
-                                type="number"
-                                className="w-full px-2 py-1.5 text-sm bg-[#222222] border border-[#444444] rounded text-text-primary focus:outline-none focus:border-accent"
-                                value={form.parallelism[phase] ?? ""}
-                                onChange={(e) => setForm({
-                                  ...form,
-                                  parallelism: { ...form.parallelism, [phase]: e.target.value ? parseInt(e.target.value) : undefined }
-                                })}
-                                placeholder="—"
-                                min="1"
-                              />
-                            </div>
-                          ))}
-                        </div>
+                        )
                       )}
+                    </div>
 
-                      <div className="flex items-start gap-2 p-3 bg-blue-500/5 border border-blue-500/20 rounded">
-                        <svg className="w-4 h-4 text-blue-400 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                        <div className="text-xs text-blue-200">
-                          <strong>Recommendations:</strong> Ingest/Indexing: 50-200, Search: 20-50, Answer/Evaluate: 10-20
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvancedConcurrencyAdvanced(!showAdvancedConcurrencyAdvanced)}
+                      className="flex items-center gap-1 text-sm text-text-muted hover:text-text-primary transition-colors"
+                    >
+                      <span>Advanced</span>
+                      <svg className={`w-4 h-4 transition-transform ${showAdvancedConcurrencyAdvanced ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  {showAdvancedConcurrencyAdvanced && (
+                    <div className="mt-1 space-y-2">
+                      <p className="text-xs text-text-muted mb-2">
+                        Override source run concurrency settings
+                      </p>
+                      {(["ingest", "indexing", "search", "answer", "evaluate"] as const).map(phase => (
+                        <div key={phase} className="flex items-center gap-3 h-7">
+                          <span className="text-sm text-text-secondary capitalize w-20">{phase}:</span>
+                          {editingPhase === phase ? (
+                            <input
+                              ref={(el) => { phaseInputRefs.current[phase] = el }}
+                              type="number"
+                              className="w-16 px-2 py-0.5 text-sm bg-[#222222] border border-[#444444] rounded text-text-primary focus:outline-none focus:border-accent"
+                              value={form.concurrency[phase] ?? ""}
+                              onChange={(e) => setForm({
+                                ...form,
+                                concurrency: { ...form.concurrency, [phase]: e.target.value ? parseInt(e.target.value) : undefined }
+                              })}
+                              onBlur={() => setEditingPhase(null)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === "Escape") {
+                                  setEditingPhase(null)
+                                }
+                              }}
+                              placeholder={String(form.concurrency.default ?? 1)}
+                              min="1"
+                            />
+                          ) : (
+                            <button
+                              type="button"
+                              className="flex items-center gap-2 text-sm text-text-primary hover:text-accent transition-colors cursor-pointer"
+                              onClick={() => setEditingPhase(phase)}
+                            >
+                              <span className={form.concurrency[phase] !== undefined ? "font-medium" : "text-text-muted"}>
+                                {form.concurrency[phase] ?? form.concurrency.default}
+                              </span>
+                              <svg className="w-3.5 h-3.5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                              </svg>
+                            </button>
+                          )}
                         </div>
-                      </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -644,7 +740,7 @@ export default function NewRunPage() {
                 Question Selection
               </label>
               <div className="flex gap-0 mb-4">
-                {(["full", "sample", "limit"] as SelectionMode[]).map((mode, index) => {
+                {(["full", "sample", "limit"] as SelectionMode[]).map((mode) => {
                   const isSelected = form.selectionMode === mode
                   const labels = { full: "Full", sample: "Sample", limit: "Limit" }
                   return (
@@ -717,84 +813,98 @@ export default function NewRunPage() {
             </div>
 
             <div>
-              <button
-                type="button"
-                onClick={() => setShowPerformanceSettings(!showPerformanceSettings)}
-                className="flex items-center gap-2 text-sm font-medium text-text-primary mb-2 hover:text-accent transition-colors"
-              >
-                <svg className={`w-4 h-4 transition-transform ${showPerformanceSettings ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                </svg>
-                Performance Settings (Optional)
-              </button>
-
-              {showPerformanceSettings && (
-                <div className="ml-6 space-y-4 p-4 bg-[#1a1a1a] border border-[#333333] rounded">
-                  <p className="text-xs text-text-muted">
-                    Configure parallelism for faster execution. Default is sequential processing (1).
-                  </p>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-text-primary mb-2">
-                        Default Parallelism
-                      </label>
+              <div className="flex items-center justify-between h-8">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-text-primary">Concurrent requests{!showAdvancedConcurrencyNew && ":"}</span>
+                  {!showAdvancedConcurrencyNew && (
+                    editingConcurrency ? (
                       <input
+                        ref={concurrencyInputRef}
                         type="number"
-                        className="w-full px-3 py-2 text-sm bg-[#222222] border border-[#444444] rounded text-text-primary focus:outline-none focus:border-accent"
-                        value={form.parallelism.default ?? ""}
+                        className="w-16 px-2 py-0.5 text-sm bg-[#222222] border border-[#444444] rounded text-text-primary focus:outline-none focus:border-accent"
+                        value={form.concurrency.default ?? ""}
                         onChange={(e) => setForm({
                           ...form,
-                          parallelism: { ...form.parallelism, default: e.target.value ? parseInt(e.target.value) : undefined }
+                          concurrency: { ...form.concurrency, default: e.target.value ? parseInt(e.target.value) : undefined }
                         })}
-                        placeholder="1 (sequential)"
+                        onBlur={() => setEditingConcurrency(false)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === "Escape") {
+                            setEditingConcurrency(false)
+                          }
+                        }}
                         min="1"
                       />
-                      <p className="text-xs text-text-muted mt-1">Applies to all phases unless overridden</p>
-                    </div>
-
-                    <div className="flex items-end">
+                    ) : (
                       <button
                         type="button"
-                        onClick={() => setShowPerPhaseSettings(!showPerPhaseSettings)}
-                        className="text-sm text-accent hover:text-accent/80 transition-colors mb-2"
+                        className="flex items-center gap-2 text-sm text-text-primary hover:text-accent transition-colors cursor-pointer"
+                        onClick={() => setEditingConcurrency(true)}
                       >
-                        {showPerPhaseSettings ? "Hide" : "Show"} per-phase settings
+                        <span className="font-medium">{form.concurrency.default ?? 1}</span>
+                        <svg className="w-3.5 h-3.5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                        </svg>
                       </button>
-                    </div>
-                  </div>
-
-                  {showPerPhaseSettings && (
-                    <div className="grid grid-cols-3 gap-3 pt-2 border-t border-[#333333]">
-                      {(["ingest", "indexing", "search", "answer", "evaluate"] as const).map(phase => (
-                        <div key={phase}>
-                          <label className="block text-xs font-medium text-text-secondary mb-1 capitalize">
-                            {phase}
-                          </label>
-                          <input
-                            type="number"
-                            className="w-full px-2 py-1.5 text-sm bg-[#222222] border border-[#444444] rounded text-text-primary focus:outline-none focus:border-accent"
-                            value={form.parallelism[phase] ?? ""}
-                            onChange={(e) => setForm({
-                              ...form,
-                              parallelism: { ...form.parallelism, [phase]: e.target.value ? parseInt(e.target.value) : undefined }
-                            })}
-                            placeholder="—"
-                            min="1"
-                          />
-                        </div>
-                      ))}
-                    </div>
+                    )
                   )}
+                </div>
 
-                  <div className="flex items-start gap-2 p-3 bg-blue-500/5 border border-blue-500/20 rounded">
-                    <svg className="w-4 h-4 text-blue-400 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <div className="text-xs text-blue-200">
-                      <strong>Recommendations:</strong> Ingest/Indexing: 50-200, Search: 20-50, Answer/Evaluate: 10-20
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedConcurrencyNew(!showAdvancedConcurrencyNew)}
+                  className="flex items-center gap-1 text-sm text-text-muted hover:text-text-primary transition-colors"
+                >
+                  <span>Advanced</span>
+                  <svg className={`w-4 h-4 transition-transform ${showAdvancedConcurrencyNew ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+              </div>
+
+              {showAdvancedConcurrencyNew && (
+                <div className="space-y-2">
+                  <p className="text-xs text-text-muted mb-2">
+                    Process multiple items simultaneously for faster execution
+                  </p>
+                  {(["ingest", "indexing", "search", "answer", "evaluate"] as const).map(phase => (
+                    <div key={phase} className="flex items-center gap-3 h-7">
+                      <span className="text-sm text-text-secondary capitalize w-20">{phase}:</span>
+                      {editingPhase === phase ? (
+                        <input
+                          ref={(el) => { phaseInputRefs.current[phase] = el }}
+                          type="number"
+                          className="w-16 px-2 py-0.5 text-sm bg-[#222222] border border-[#444444] rounded text-text-primary focus:outline-none focus:border-accent"
+                          value={form.concurrency[phase] ?? ""}
+                          onChange={(e) => setForm({
+                            ...form,
+                            concurrency: { ...form.concurrency, [phase]: e.target.value ? parseInt(e.target.value) : undefined }
+                          })}
+                          onBlur={() => setEditingPhase(null)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === "Escape") {
+                              setEditingPhase(null)
+                            }
+                          }}
+                          placeholder={String(form.concurrency.default ?? 1)}
+                          min="1"
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          className="flex items-center gap-2 text-sm text-text-primary hover:text-accent transition-colors cursor-pointer"
+                          onClick={() => setEditingPhase(phase)}
+                        >
+                          <span className={form.concurrency[phase] !== undefined ? "font-medium" : "text-text-muted"}>
+                            {form.concurrency[phase] ?? form.concurrency.default}
+                          </span>
+                          <svg className="w-3.5 h-3.5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                          </svg>
+                        </button>
+                      )}
                     </div>
-                  </div>
+                  ))}
                 </div>
               )}
             </div>

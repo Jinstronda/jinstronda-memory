@@ -1,22 +1,29 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import Link from "next/link"
-import { useParams } from "next/navigation"
+import { useParams, useRouter } from "next/navigation"
 import {
   getCompare,
   getCompareReport,
   stopCompare,
+  resumeCompare,
   type CompareDetail,
-  type CompareReport
+  type CompareReport,
+  type CompareRunInfo
 } from "@/lib/api"
 import { formatDate, getStatusColor, cn } from "@/lib/utils"
 import { AccuracyBarChart } from "@/components/accuracy-bar-chart"
+import { DataTable, type Column } from "@/components/data-table"
+import { CircularProgress } from "@/components/circular-progress"
+import { EmptyState, DocumentIcon } from "@/components/empty-state"
+import { Tooltip } from "@/components/tooltip"
 
 const POLL_INTERVAL = 2000 // 2 seconds
 
 export default function CompareDetailPage() {
   const params = useParams()
+  const router = useRouter()
   const compareId = decodeURIComponent(params.compareId as string)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
@@ -25,10 +32,124 @@ export default function CompareDetailPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [stopping, setStopping] = useState(false)
+  const [continuing, setContinuing] = useState(false)
 
   // Check if comparison is in progress
   const isRunning = compare?.status === "running" || compare?.status === "pending"
-  const canStop = isRunning
+  const isStopping = compare?.status === "stopping"
+  const isPartial = compare?.status === "partial"
+  const isFailed = compare?.status === "failed"
+  const canStop = isRunning || isStopping
+  const canContinue = isPartial || isFailed
+
+  // Table columns for runs
+  const runColumns: Column<CompareRunInfo>[] = useMemo(() => [
+    {
+      key: "runId",
+      header: "Run ID",
+      render: (run) => (
+        <span className="font-mono text-accent">
+          {run.runId}
+        </span>
+      ),
+    },
+    {
+      key: "provider",
+      header: "Provider",
+      render: (run) => <span className="capitalize">{run.provider}</span>,
+    },
+    {
+      key: "status",
+      header: "Status",
+      render: (run) => {
+        const runIsActive = run.status === "running" || run.status === "pending" || run.status === "initializing" || run.status === "stopping"
+        const p = run.progress
+        const total = p?.total || 0
+        const phasesCompleted = (p?.ingested || 0) + (p?.indexed || 0) + (p?.searched || 0) + (p?.answered || 0) + (p?.evaluated || 0)
+        const totalPhases = 5 * total
+        const progress = totalPhases > 0 ? phasesCompleted / totalPhases : 0
+
+        const episodes = p?.indexingEpisodes
+        const hasEpisodeData = episodes && episodes.total > 0
+
+        let phasesFullyComplete = 0
+        if ((p?.ingested || 0) === total && total > 0) phasesFullyComplete++
+        if ((p?.indexed || 0) === total && total > 0) phasesFullyComplete++
+        if ((p?.searched || 0) === total && total > 0) phasesFullyComplete++
+        if ((p?.answered || 0) === total && total > 0) phasesFullyComplete++
+        if ((p?.evaluated || 0) === total && total > 0) phasesFullyComplete++
+
+        const progressContent = (
+          <div className="flex items-center gap-2">
+            {runIsActive && (
+              <CircularProgress progress={progress} size={18} strokeWidth={2} />
+            )}
+            <span className={cn("badge", getStatusColor(run.status))}>
+              {run.status}
+            </span>
+            {runIsActive && total > 0 && (
+              <span className="text-text-muted text-xs font-mono">
+                {phasesFullyComplete}/5
+              </span>
+            )}
+          </div>
+        )
+
+        if (hasEpisodeData && runIsActive) {
+          const episodeProgress = episodes.total > 0 ? (episodes.completed / episodes.total) * 100 : 0
+          return (
+            <Tooltip
+              content={
+                <div className="min-w-[120px]">
+                  <div className="font-medium mb-1.5">Episodes Indexed</div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1.5 bg-bg-elevated">
+                      <div
+                        className="h-full bg-accent"
+                        style={{ width: `${episodeProgress}%` }}
+                      />
+                    </div>
+                    <span className="font-mono text-text-primary">{episodes.completed}/{episodes.total}</span>
+                  </div>
+                  {episodes.failed > 0 && (
+                    <div className="text-status-error mt-1">{episodes.failed} failed</div>
+                  )}
+                </div>
+              }
+            >
+              {progressContent}
+            </Tooltip>
+          )
+        }
+
+        return progressContent
+      },
+    },
+    {
+      key: "accuracy",
+      header: "Accuracy",
+      align: "right",
+      render: (run) => {
+        const accuracyPct = run.accuracy !== null && run.accuracy !== undefined
+          ? (run.accuracy * 100).toFixed(0)
+          : null
+        return accuracyPct ? (
+          <span className="font-mono">{accuracyPct}%</span>
+        ) : (
+          <span className="text-text-muted">—</span>
+        )
+      },
+    },
+    {
+      key: "date",
+      header: "Date",
+      render: () => (
+        <span className="text-text-secondary text-sm">
+          {compare ? formatDate(compare.createdAt) : "—"}
+        </span>
+      ),
+    },
+  ], [compare])
 
   // Silent refresh (no loading state)
   const refreshData = useCallback(async () => {
@@ -98,6 +219,19 @@ export default function CompareDetailPage() {
     }
   }
 
+  async function handleContinue() {
+    if (continuing) return
+    setContinuing(true)
+    try {
+      await resumeCompare(compareId)
+      await refreshData()
+    } catch (e) {
+      console.error("Failed to continue:", e)
+    } finally {
+      setContinuing(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -117,11 +251,6 @@ export default function CompareDetailPage() {
     )
   }
 
-  // Get reports by provider for easier access
-  const reportsByProvider = new Map(
-    report?.reports.map(r => [r.provider, r.report]) || []
-  )
-
   return (
     <div className="animate-fade-in">
       {/* Breadcrumb */}
@@ -132,165 +261,107 @@ export default function CompareDetailPage() {
       </div>
 
       {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-display font-semibold text-text-primary flex items-center gap-3 flex-wrap">
-          {compareId}
-          <span className={cn("badge text-sm", getStatusColor(compare.status))}>
-            {compare.status}
-          </span>
-        </h1>
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-display font-semibold text-text-primary flex items-center gap-3">
+            {compareId}
+            <span className={cn("badge text-sm", getStatusColor(compare.status))}>
+              {compare.status}
+            </span>
+            {canStop && (
+              <button
+                onClick={handleStop}
+                disabled={stopping || isStopping}
+                className={cn(
+                  "px-3 py-1 text-sm rounded transition-colors cursor-pointer",
+                  "bg-status-error/10 text-status-error hover:bg-status-error/20",
+                  (stopping || isStopping) && "opacity-50 cursor-not-allowed"
+                )}
+              >
+                {stopping || isStopping ? "Stopping..." : "Terminate"}
+              </button>
+            )}
+            {canContinue && (
+              <button
+                onClick={handleContinue}
+                disabled={continuing}
+                className={cn(
+                  "px-3 py-1 text-sm rounded transition-colors cursor-pointer",
+                  "bg-accent/10 text-accent hover:bg-accent/20",
+                  continuing && "opacity-50 cursor-not-allowed"
+                )}
+              >
+                {continuing ? "Resuming..." : "Continue"}
+              </button>
+            )}
+          </h1>
+          <div className="flex items-center gap-4 mt-2 text-sm text-text-secondary flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-text-muted">Providers:</span>
+              <div className="flex gap-2">
+                {(compare.providers || compare.runs?.map(r => r.provider) || []).map(provider => (
+                  <span key={provider} className="badge text-xs bg-accent/10 text-accent capitalize">
+                    {provider}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <span>
+              <span className="text-text-muted">Benchmark:</span>{" "}
+              <span className="capitalize">{compare.benchmark}</span>
+            </span>
+            <span>
+              <span className="text-text-muted">Judge:</span>{" "}
+              {compare.judge}
+            </span>
+            <span>
+              <span className="text-text-muted">Created:</span>{" "}
+              {formatDate(compare.createdAt)}
+            </span>
+          </div>
 
-        <div className="flex items-center gap-4 mt-3 text-sm text-text-secondary flex-wrap">
-          <div className="flex items-center gap-2">
-            <span className="text-text-muted">Providers:</span>
-            <div className="flex gap-2">
-              {(compare.providers || compare.runs?.map(r => r.provider) || []).map(provider => (
-                <span key={provider} className="badge text-xs bg-accent/10 text-accent capitalize">
-                  {provider}
-                </span>
+          {/* Run IDs - clickable links to individual runs */}
+          {compare.runs && compare.runs.length > 0 && (
+            <div className="flex gap-3 mt-3 flex-wrap">
+              {compare.runs.map(run => (
+                <Link
+                  key={run.runId}
+                  href={`/runs/${encodeURIComponent(run.runId)}`}
+                  target="_blank"
+                  className="group flex flex-col items-start px-3 py-2 border border-border rounded hover:border-text-secondary transition-colors"
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono text-xs text-accent group-hover:underline">
+                      {run.runId.length > 16 ? `${run.runId.slice(0, 16)}...` : run.runId}
+                    </span>
+                    <svg
+                      className="w-3 h-3 text-border group-hover:text-text-secondary transition-colors"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 19.5l15-15m0 0H8.25m11.25 0v11.25" />
+                    </svg>
+                  </div>
+                  <span className="text-[10px] text-text-muted capitalize mt-0.5">{run.provider}</span>
+                </Link>
               ))}
             </div>
-          </div>
-          <span>
-            <span className="text-text-muted">Benchmark:</span>{" "}
-            <span className="capitalize">{compare.benchmark}</span>
-          </span>
-          <span>
-            <span className="text-text-muted">Judge:</span>{" "}
-            {compare.judge}
-          </span>
-          <span>
-            <span className="text-text-muted">Created:</span>{" "}
-            {formatDate(compare.createdAt)}
-          </span>
+          )}
         </div>
-
-        {/* Run IDs - clickable links to individual runs */}
-        {compare.runs && compare.runs.length > 0 && (
-          <div className="flex gap-3 mt-3 flex-wrap">
-            {compare.runs.map(run => (
-              <Link
-                key={run.runId}
-                href={`/runs/${encodeURIComponent(run.runId)}`}
-                target="_blank"
-                className="group flex flex-col items-start px-3 py-2 border border-border rounded hover:border-text-secondary transition-colors"
-              >
-                <div className="flex items-center gap-1.5">
-                  <span className="font-mono text-xs text-accent group-hover:underline">
-                    {run.runId.length > 16 ? `${run.runId.slice(0, 16)}...` : run.runId}
-                  </span>
-                  <svg
-                    className="w-3 h-3 text-border group-hover:text-text-secondary transition-colors"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 19.5l15-15m0 0H8.25m11.25 0v11.25" />
-                  </svg>
-                </div>
-                <span className="text-[10px] text-text-muted capitalize mt-0.5">{run.provider}</span>
-              </Link>
-            ))}
-          </div>
-        )}
-
-        {/* Actions - only show Stop button when running */}
-        {canStop && (
-          <div className="flex gap-2 mt-4">
-            <button
-              onClick={handleStop}
-              disabled={stopping}
-              className={cn(
-                "px-4 py-2 text-sm rounded transition-colors cursor-pointer",
-                "bg-status-error/10 text-status-error hover:bg-status-error/20",
-                stopping && "opacity-50 cursor-not-allowed"
-              )}
-            >
-              {stopping ? "Stopping..." : "Stop"}
-            </button>
-          </div>
-        )}
       </div>
 
-      {/* Individual Run Progress (when running) */}
-      {isRunning && compare.runs && compare.runs.length > 0 && (
-        <div className="card mb-8">
-          <h2 className="text-lg font-medium text-text-primary mb-4">Run Progress</h2>
-          <div className="space-y-4">
-            {compare.runs.map(run => {
-              const progress = run.progress
-              const total = progress?.total || 0
-              const evaluated = progress?.evaluated || 0
-              const percentage = total > 0 ? (evaluated / total) * 100 : 0
-
-              return (
-                <div key={run.provider} className="border border-border rounded p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-3">
-                      <span className="capitalize text-text-primary font-medium">{run.provider}</span>
-                      <span className={cn("badge text-xs", getStatusColor(run.status))}>
-                        {run.status}
-                      </span>
-                    </div>
-                    <span className="text-sm text-text-secondary font-mono">
-                      {evaluated}/{total}
-                    </span>
-                  </div>
-
-                  {/* Progress bar */}
-                  <div className="w-full h-2 bg-bg-primary rounded-full overflow-hidden mb-3">
-                    <div
-                      className="h-full bg-accent transition-all duration-300"
-                      style={{ width: `${percentage}%` }}
-                    />
-                  </div>
-
-                  {/* Phase indicators */}
-                  {progress && (
-                    <div className="flex gap-3 text-xs">
-                      <PhaseIndicator
-                        label="ingest"
-                        current={progress.ingested}
-                        total={total}
-                        completed={progress.ingested === total}
-                      />
-                      <PhaseIndicator
-                        label="index"
-                        current={progress.indexed}
-                        total={total}
-                        completed={progress.indexed === total}
-                      />
-                      <PhaseIndicator
-                        label="search"
-                        current={progress.searched}
-                        total={total}
-                        completed={progress.searched === total}
-                      />
-                      <PhaseIndicator
-                        label="answer"
-                        current={progress.answered}
-                        total={total}
-                        completed={progress.answered === total}
-                      />
-                      <PhaseIndicator
-                        label="evaluate"
-                        current={progress.evaluated}
-                        total={total}
-                        completed={progress.evaluated === total}
-                      />
-                    </div>
-                  )}
-
-                  {run.error && (
-                    <div className="mt-3 text-sm text-status-error font-mono">
-                      Error: {run.error}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
+      {compare.runs && compare.runs.length > 0 && compare.status !== "completed" && (
+        <div className="mb-8">
+          <h2 className="text-lg font-medium text-text-primary mb-4">Runs</h2>
+          <DataTable
+            columns={runColumns}
+            data={compare.runs}
+            onRowClick={(run) => router.push(`/runs/${encodeURIComponent(run.runId)}`)}
+            getRowKey={(run) => run.runId}
+            connectToFilterBar={false}
+          />
         </div>
       )}
 
@@ -359,6 +430,7 @@ export default function CompareDetailPage() {
                         <tr className="border-b border-border">
                           <th className="text-left py-2 px-3 text-text-muted font-medium uppercase text-xs">Provider</th>
                           <th className="text-right py-2 px-3 text-text-muted font-medium uppercase text-xs">Ingest</th>
+                          <th className="text-right py-2 px-3 text-text-muted font-medium uppercase text-xs">Index</th>
                           <th className="text-right py-2 px-3 text-text-muted font-medium uppercase text-xs">Search</th>
                           <th className="text-right py-2 px-3 text-text-muted font-medium uppercase text-xs">Answer</th>
                           <th className="text-right py-2 px-3 text-text-muted font-medium uppercase text-xs">Evaluate</th>
@@ -367,7 +439,7 @@ export default function CompareDetailPage() {
                       </thead>
                       <tbody>
                         {(() => {
-                          const phases = ["ingest", "search", "answer", "evaluate", "total"] as const
+                          const phases = ["ingest", "indexing", "search", "answer", "evaluate", "total"] as const
                           const rows = report.reports
                             .filter(r => r.report.latency || r.report.latencyStats)
                             .map(r => ({
@@ -650,39 +722,12 @@ export default function CompareDetailPage() {
 
       {/* Empty state when no reports yet */}
       {!report && !isRunning && (
-        <div className="card text-center py-12">
-          <p className="text-text-secondary">No comparison results available yet.</p>
-        </div>
+        <EmptyState
+          icon={<DocumentIcon />}
+          title="No comparison results yet"
+          description="Results will appear here once the comparison runs complete."
+        />
       )}
-    </div>
-  )
-}
-
-// Phase indicator component
-function PhaseIndicator({
-  label,
-  current,
-  total,
-  completed
-}: {
-  label: string
-  current: number
-  total: number
-  completed: boolean
-}) {
-  const isActive = current > 0 && current < total
-  const icon = completed ? "✓" : isActive ? "●" : "○"
-
-  return (
-    <div className={cn(
-      "flex items-center gap-1.5",
-      completed && "text-status-success",
-      isActive && "text-accent",
-      !completed && !isActive && "text-text-muted"
-    )}>
-      <span>{icon}</span>
-      <span className="capitalize">{label}</span>
-      <span className="text-text-muted">({current}/{total})</span>
     </div>
   )
 }

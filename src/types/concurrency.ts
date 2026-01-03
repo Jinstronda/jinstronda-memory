@@ -1,4 +1,4 @@
-export interface ParallelismConfig {
+export interface ConcurrencyConfig {
 	default: number
 	ingest?: number
 	indexing?: number
@@ -9,14 +9,14 @@ export interface ParallelismConfig {
 
 export type PhaseId = "ingest" | "indexing" | "search" | "answer" | "evaluate"
 
-export type PhaseParallelismMap = {
+export type PhaseConcurrencyMap = {
 	[K in PhaseId]: number
 }
 
-export function resolveParallelism(
+export function resolveConcurrency(
 	phase: PhaseId,
-	cliConfig?: ParallelismConfig,
-	providerDefault?: ParallelismConfig,
+	cliConfig?: ConcurrencyConfig,
+	providerDefault?: ConcurrencyConfig,
 ): number {
 	// Priority 1: CLI per-phase flag
 	if (cliConfig && cliConfig[phase] !== undefined) {

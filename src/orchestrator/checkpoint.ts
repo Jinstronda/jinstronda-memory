@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, readdirSync, cpSync, renameSync, unlinkSync } from "fs"
 import { join } from "path"
 import type { RunCheckpoint, QuestionCheckpoint, PhaseStatus, PhaseId, RunStatus, SamplingConfig } from "../types/checkpoint"
-import type { ParallelismConfig } from "../types/parallelism"
+import type { ConcurrencyConfig } from "../types/concurrency"
 import { PHASE_ORDER } from "../types/checkpoint"
 import { logger } from "../utils/logger"
 
@@ -92,7 +92,7 @@ export class CheckpointManager {
         benchmark: string,
         judge: string,
         answeringModel: string,
-        options?: { limit?: number; sampling?: SamplingConfig; targetQuestionIds?: string[]; dataSourceRunId?: string; status?: RunStatus; parallelism?: ParallelismConfig }
+        options?: { limit?: number; sampling?: SamplingConfig; targetQuestionIds?: string[]; dataSourceRunId?: string; status?: RunStatus; concurrency?: ConcurrencyConfig }
     ): RunCheckpoint {
         const checkpoint: RunCheckpoint = {
             runId,
@@ -107,7 +107,7 @@ export class CheckpointManager {
             limit: options?.limit,
             sampling: options?.sampling,
             targetQuestionIds: options?.targetQuestionIds,
-            parallelism: options?.parallelism,
+            concurrency: options?.concurrency,
             questions: {},
         }
 
@@ -211,8 +211,28 @@ export class CheckpointManager {
         searched: number
         answered: number
         evaluated: number
+        indexingEpisodes?: {
+            total: number
+            completed: number
+            failed: number
+        }
     } {
         const questions = Object.values(checkpoint.questions)
+
+        let episodesTotal = 0
+        let episodesCompleted = 0
+        let episodesFailed = 0
+
+        for (const q of questions) {
+            const ingestResult = q.phases.ingest.ingestResult
+            const total = (ingestResult?.documentIds?.length || 0) + (ingestResult?.taskIds?.length || 0)
+            episodesTotal += total
+
+            const indexing = q.phases.indexing
+            episodesCompleted += indexing?.completedIds?.length || 0
+            episodesFailed += indexing?.failedIds?.length || 0
+        }
+
         return {
             total: questions.length,
             ingested: questions.filter(q => q.phases.ingest.status === "completed").length,
@@ -220,6 +240,13 @@ export class CheckpointManager {
             searched: questions.filter(q => q.phases.search.status === "completed").length,
             answered: questions.filter(q => q.phases.answer.status === "completed").length,
             evaluated: questions.filter(q => q.phases.evaluate.status === "completed").length,
+            ...(episodesTotal > 0 ? {
+                indexingEpisodes: {
+                    total: episodesTotal,
+                    completed: episodesCompleted,
+                    failed: episodesFailed,
+                }
+            } : {}),
         }
     }
 
@@ -284,7 +311,7 @@ export class CheckpointManager {
             limit: source.limit,
             sampling: source.sampling,
             targetQuestionIds: source.targetQuestionIds,
-            parallelism: source.parallelism,
+            concurrency: source.concurrency,
             questions: newQuestions,
         }
 

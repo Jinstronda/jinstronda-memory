@@ -106,6 +106,7 @@ export interface BenchmarkResult {
     }
     latency: {
         ingest: LatencyStats
+        indexing: LatencyStats
         search: LatencyStats
         answer: LatencyStats
         evaluate: LatencyStats

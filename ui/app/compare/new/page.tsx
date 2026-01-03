@@ -114,7 +114,7 @@ export default function NewComparePage() {
         sampling,
       })
 
-      router.push("/compare")
+      router.push(`/compare`)
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start comparison")
       setSubmitting(false)

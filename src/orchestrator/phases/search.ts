@@ -5,8 +5,8 @@ import type { Benchmark } from "../../types/benchmark"
 import type { RunCheckpoint } from "../../types/checkpoint"
 import { CheckpointManager } from "../checkpoint"
 import { logger } from "../../utils/logger"
-import { ParallelExecutor } from "../parallel"
-import { resolveParallelism } from "../../types/parallelism"
+import { ConcurrentExecutor } from "../concurrent"
+import { resolveConcurrency } from "../../types/concurrency"
 
 export async function runSearchPhase(
     provider: Provider,
@@ -36,15 +36,15 @@ export async function runSearchPhase(
         mkdirSync(resultsDir, { recursive: true })
     }
 
-    const concurrency = resolveParallelism(
+    const concurrency = resolveConcurrency(
         "search",
-        checkpoint.parallelism,
-        provider.defaultParallelism
+        checkpoint.concurrency,
+        provider.concurrency
     )
 
     logger.info(`Searching ${pendingQuestions.length} questions (concurrency: ${concurrency})...`)
 
-    await ParallelExecutor.executeParallel(
+    await ConcurrentExecutor.execute(
         pendingQuestions,
         concurrency,
         checkpoint.runId,

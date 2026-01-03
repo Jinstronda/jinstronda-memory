@@ -1,5 +1,5 @@
 import { Supermemory } from "supermemory"
-import type { Provider, ProviderConfig, IngestOptions, IngestResult, SearchOptions } from "../../types/provider"
+import type { Provider, ProviderConfig, IngestOptions, IngestResult, SearchOptions, IndexingProgressCallback } from "../../types/provider"
 import type { UnifiedSession } from "../../types/unified"
 import { logger } from "../../utils/logger"
 import { SUPERMEMORY_PROMPTS } from "./prompts"
@@ -7,7 +7,7 @@ import { SUPERMEMORY_PROMPTS } from "./prompts"
 export class SupermemoryProvider implements Provider {
     name = "supermemory"
     prompts = SUPERMEMORY_PROMPTS
-    defaultParallelism = {
+    concurrency = {
         default: 50,
         ingest: 100,
         indexing: 200,
@@ -52,35 +52,61 @@ export class SupermemoryProvider implements Provider {
         return { documentIds }
     }
 
-    async awaitIndexing(result: IngestResult, _containerTag: string): Promise<void> {
+    async awaitIndexing(
+        result: IngestResult,
+        _containerTag: string,
+        onProgress?: IndexingProgressCallback
+    ): Promise<void> {
         if (!this.client) throw new Error("Provider not initialized")
-        if (result.documentIds.length === 0) return
+        if (result.documentIds.length === 0) {
+            onProgress?.({ completedIds: [], failedIds: [], total: 0 })
+            return
+        }
 
-        const pollInterval = 2000
-        const timeout = 300000
         const total = result.documentIds.length
+        const pending = new Set(result.documentIds)
+        const completedIds: string[] = []
+        const failedIds: string[] = []
+        let backoffMs = 1000
 
-        for (let i = 0; i < total; i++) {
-            const docId = result.documentIds[i]
-            const start = Date.now()
+        onProgress?.({ completedIds: [], failedIds: [], total })
 
-            while (Date.now() - start < timeout) {
-                const doc = await this.client.documents.get(docId)
-                if (doc.status === "done" || doc.status === "failed") {
-                    logger.debug(`[${i + 1}/${total}] Document ${docId} indexed (${doc.status})`)
-                    break
+        while (pending.size > 0) {
+            const pendingArray = Array.from(pending)
+            const results = await Promise.allSettled(
+                pendingArray.map(async (docId) => {
+                    const doc = await this.client!.documents.get(docId)
+                    if (doc.status === "done" || doc.status === "failed") {
+                        const memory = await this.client!.memories.get(docId)
+                        return { docId, docStatus: doc.status, memStatus: memory.status }
+                    }
+                    return { docId, docStatus: doc.status, memStatus: "pending" }
+                })
+            )
+
+            for (const res of results) {
+                if (res.status === "fulfilled") {
+                    const { docId, docStatus, memStatus } = res.value
+                    if (docStatus === "failed" || memStatus === "failed") {
+                        pending.delete(docId)
+                        failedIds.push(docId)
+                    } else if (docStatus === "done" && memStatus === "done") {
+                        pending.delete(docId)
+                        completedIds.push(docId)
+                    }
                 }
-                await new Promise(r => setTimeout(r, pollInterval))
             }
 
-            while (Date.now() - start < timeout) {
-                const memory = await this.client.memories.get(docId)
-                if (memory.status === "done" || memory.status === "failed") {
-                    logger.debug(`[${i + 1}/${total}] Memory ${docId} extracted (${memory.status})`)
-                    break
-                }
-                await new Promise(r => setTimeout(r, pollInterval))
+            onProgress?.({ completedIds: [...completedIds], failedIds: [...failedIds], total })
+
+            if (pending.size > 0) {
+                await new Promise(r => setTimeout(r, backoffMs))
+                backoffMs = Math.min(backoffMs * 1.2, 5000)
             }
+        }
+
+        if (failedIds.length > 0) {
+            logger.warn(`${failedIds.length} documents failed indexing`)
         }
     }
 

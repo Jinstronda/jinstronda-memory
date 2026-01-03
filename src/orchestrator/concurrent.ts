@@ -1,32 +1,32 @@
 import { logger } from "../utils/logger"
 import { shouldStop } from "../server/runState"
 
-export interface ParallelTaskContext<T> {
+export interface ConcurrentTaskContext<T> {
 	item: T
 	index: number
 	total: number
 }
 
-export interface ParallelExecutionOptions<T, R> {
+export interface ConcurrentExecutionOptions<T, R> {
 	items: T[]
 	concurrency: number
 	rateLimitMs: number
 	runId: string
 	phaseName: string
-	executeTask: (context: ParallelTaskContext<T>) => Promise<R>
+	executeTask: (context: ConcurrentTaskContext<T>) => Promise<R>
 	onBatchStart?: (batchIndex: number, batchSize: number) => void
 	onBatchComplete?: (batchIndex: number, results: R[]) => void
-	onTaskComplete?: (context: ParallelTaskContext<T>, result: R) => void
-	onError?: (context: ParallelTaskContext<T>, error: Error) => void
+	onTaskComplete?: (context: ConcurrentTaskContext<T>, result: R) => void
+	onError?: (context: ConcurrentTaskContext<T>, error: Error) => void
 }
 
-export class ParallelExecutor {
+export class ConcurrentExecutor {
 	/**
-	 * Execute tasks in parallel batches with rate limiting
+	 * Execute tasks concurrently in batches with rate limiting
 	 * Throws on first error (fail-fast), but ensures in-flight operations complete
 	 */
 	static async executeBatched<T, R>(
-		options: ParallelExecutionOptions<T, R>
+		options: ConcurrentExecutionOptions<T, R>
 	): Promise<R[]> {
 		const {
 			items,
@@ -66,7 +66,7 @@ export class ParallelExecutor {
 
 			const batchPromises = batch.map(async (item, batchOffset) => {
 				const globalIndex = batchStart + batchOffset
-				const context: ParallelTaskContext<T> = {
+				const context: ConcurrentTaskContext<T> = {
 					item,
 					index: globalIndex,
 					total: items.length,
@@ -109,14 +109,14 @@ export class ParallelExecutor {
 	}
 
 	/**
-	 * Simple parallel execution without batching (for phases without rate limits)
+	 * Simple concurrent execution without batching (for phases without rate limits)
 	 */
-	static async executeParallel<T, R>(
+	static async execute<T, R>(
 		items: T[],
 		concurrency: number,
 		runId: string,
 		phaseName: string,
-		executeTask: (context: ParallelTaskContext<T>) => Promise<R>
+		executeTask: (context: ConcurrentTaskContext<T>) => Promise<R>
 	): Promise<R[]> {
 		return this.executeBatched({
 			items,

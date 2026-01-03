@@ -2,12 +2,14 @@ import type { ProviderName } from "../types/provider"
 import type { BenchmarkName } from "../types/benchmark"
 import type { SamplingConfig } from "../types/checkpoint"
 import type { BenchmarkResult } from "../types/unified"
-import { orchestrator } from "./index"
+import { orchestrator, CheckpointManager } from "./index"
 import { createBenchmark } from "../benchmarks"
 import { logger } from "../utils/logger"
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "fs"
 import { join } from "path"
 import { startRun, endRun } from "../server/runState"
+
+const checkpointManager = new CheckpointManager()
 
 const COMPARE_DIR = "./data/compare"
 const RUNS_DIR = "./data/runs"
@@ -139,7 +141,12 @@ export class BatchManager {
     }
 
     async compare(options: CompareOptions): Promise<CompareResult> {
-        const { providers, benchmark, judgeModel, answeringModel, sampling, force } = options
+        const manifest = await this.createManifest(options)
+        return this.executeRuns(manifest)
+    }
+
+    async createManifest(options: CompareOptions): Promise<CompareManifest> {
+        const { providers, benchmark, judgeModel, answeringModel, sampling } = options
         const compareId = generateCompareId()
 
         logger.info(`Loading benchmark: ${benchmark}`)
@@ -174,7 +181,7 @@ export class BatchManager {
         logger.info(`Providers: ${providers.join(", ")}`)
         logger.info(`Questions: ${targetQuestionIds.length}`)
 
-        return this.executeRuns(manifest)
+        return manifest
     }
 
     async resume(compareId: string, force?: boolean): Promise<CompareResult> {
@@ -211,6 +218,13 @@ export class BatchManager {
                         answeringModel: manifest.answeringModel,
                         questionIds: manifest.targetQuestionIds,
                     })
+                } catch (error) {
+                    // Update checkpoint status to persist the failure state
+                    const checkpoint = checkpointManager.load(run.runId)
+                    if (checkpoint) {
+                        checkpointManager.updateStatus(checkpoint, "failed")
+                    }
+                    throw error
                 } finally {
                     // Always unregister the run when done (success or failure)
                     endRun(run.runId)

@@ -3,8 +3,8 @@ import type { Benchmark } from "../../types/benchmark"
 import type { RunCheckpoint } from "../../types/checkpoint"
 import { CheckpointManager } from "../checkpoint"
 import { logger } from "../../utils/logger"
-import { ParallelExecutor } from "../parallel"
-import { resolveParallelism } from "../../types/parallelism"
+import { ConcurrentExecutor } from "../concurrent"
+import { resolveConcurrency } from "../../types/concurrency"
 
 const RATE_LIMIT_MS = 1000
 
@@ -30,15 +30,15 @@ export async function runIngestPhase(
         return
     }
 
-    const concurrency = resolveParallelism(
+    const concurrency = resolveConcurrency(
         "ingest",
-        checkpoint.parallelism,
-        provider.defaultParallelism
+        checkpoint.concurrency,
+        provider.concurrency
     )
 
     logger.info(`Ingesting ${pendingQuestions.length} questions (concurrency: ${concurrency})...`)
 
-    await ParallelExecutor.executeBatched({
+    await ConcurrentExecutor.executeBatched({
         items: pendingQuestions,
         concurrency,
         rateLimitMs: RATE_LIMIT_MS,

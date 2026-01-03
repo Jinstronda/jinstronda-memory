@@ -19,7 +19,7 @@ Usage: bun run src/index.ts <command> [options]
 
 Commands:
   run             Run full benchmark pipeline (ingest → search → answer → evaluate → report)
-  compare         Compare multiple providers against same benchmark in parallel
+  compare         Compare multiple providers against same benchmark concurrently
   ingest          Ingest benchmark data into provider
   search          Search provider for questions
   test            Test a single question (search → answer → evaluate)

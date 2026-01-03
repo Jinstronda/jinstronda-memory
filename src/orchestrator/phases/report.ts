@@ -65,6 +65,7 @@ export function generateReport(
     const evaluations: EvaluationResult[] = []
 
     const ingestDurations: number[] = []
+    const indexingDurations: number[] = []
     const searchDurations: number[] = []
     const answerDurations: number[] = []
     const evaluateDurations: number[] = []
@@ -89,12 +90,16 @@ export function generateReport(
         if (evalPhase.status !== "completed") continue
 
         const ingestPhase = qCheckpoint.phases.ingest
+        const indexingPhase = qCheckpoint.phases.indexing
         const searchPhase = qCheckpoint.phases.search
         const answerPhase = qCheckpoint.phases.answer
 
+        const ingestDurationMs = ingestPhase.durationMs || 0
+        const indexingDurationMs = indexingPhase.durationMs || 0
         const searchDurationMs = searchPhase.durationMs || 0
         const answerDurationMs = answerPhase.durationMs || 0
-        const totalDurationMs = searchDurationMs + answerDurationMs
+        const evaluateDurationMs = evalPhase.durationMs || 0
+        const totalDurationMs = ingestDurationMs + indexingDurationMs + searchDurationMs + answerDurationMs + evaluateDurationMs
 
         const retrievalMetrics = evalPhase.retrievalMetrics
 
@@ -119,10 +124,11 @@ export function generateReport(
         }
 
         if (ingestPhase.durationMs) ingestDurations.push(ingestPhase.durationMs)
+        if (indexingPhase.durationMs) indexingDurations.push(indexingPhase.durationMs)
         if (searchPhase.durationMs) searchDurations.push(searchPhase.durationMs)
         if (answerPhase.durationMs) answerDurations.push(answerPhase.durationMs)
         if (evalPhase.durationMs) evaluateDurations.push(evalPhase.durationMs)
-        if (searchDurationMs && answerDurationMs) totalDurations.push(totalDurationMs)
+        if (totalDurationMs > 0) totalDurations.push(totalDurationMs)
 
         const qType = question.questionType
         if (!byType[qType]) {
@@ -142,7 +148,7 @@ export function generateReport(
         }
         if (searchDurationMs) typeStats.searchDurations.push(searchDurationMs)
         if (answerDurationMs) typeStats.answerDurations.push(answerDurationMs)
-        if (searchDurationMs && answerDurationMs) typeStats.totalDurations.push(totalDurationMs)
+        if (totalDurationMs > 0) typeStats.totalDurations.push(totalDurationMs)
         if (retrievalMetrics) typeStats.retrievalMetrics.push(retrievalMetrics)
     }
 
@@ -183,6 +189,7 @@ export function generateReport(
         },
         latency: {
             ingest: calculateLatencyStats(ingestDurations),
+            indexing: calculateLatencyStats(indexingDurations),
             search: calculateLatencyStats(searchDurations),
             answer: calculateLatencyStats(answerDurations),
             evaluate: calculateLatencyStats(evaluateDurations),
@@ -233,11 +240,12 @@ export function printReport(result: BenchmarkResult): void {
     console.log("-".repeat(60))
     console.log("\nLATENCY (ms):")
     console.log("                    min     max    mean  median     p95     p99")
+    console.log(`  Ingest:       ${formatLatencyRow(result.latency.ingest)}`)
+    console.log(`  Indexing:     ${formatLatencyRow(result.latency.indexing)}`)
     console.log(`  Search:       ${formatLatencyRow(result.latency.search)}`)
     console.log(`  Answer:       ${formatLatencyRow(result.latency.answer)}`)
-    console.log(`  Total:        ${formatLatencyRow(result.latency.total)}`)
-    console.log(`  Ingest:       ${formatLatencyRow(result.latency.ingest)}`)
     console.log(`  Evaluate:     ${formatLatencyRow(result.latency.evaluate)}`)
+    console.log(`  Total:        ${formatLatencyRow(result.latency.total)}`)
 
     if (result.retrieval) {
         console.log("-".repeat(60))

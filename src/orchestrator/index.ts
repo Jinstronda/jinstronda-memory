@@ -2,7 +2,7 @@ import type { ProviderName } from "../types/provider"
 import type { BenchmarkName } from "../types/benchmark"
 import type { JudgeName } from "../types/judge"
 import type { RunCheckpoint, SamplingConfig } from "../types/checkpoint"
-import type { ParallelismConfig } from "../types/parallelism"
+import type { ConcurrencyConfig } from "../types/concurrency"
 import { createProvider } from "../providers"
 import { createBenchmark } from "../benchmarks"
 import { createJudge } from "../judges"
@@ -25,7 +25,7 @@ export interface OrchestratorOptions {
     answeringModel?: string
     limit?: number
     sampling?: SamplingConfig
-    parallelism?: ParallelismConfig
+    concurrency?: ConcurrencyConfig
     force?: boolean
     questionIds?: string[]
     phases?: ("ingest" | "indexing" | "search" | "answer" | "evaluate" | "report")[]
@@ -81,7 +81,7 @@ export class Orchestrator {
             answeringModel = "gpt-4o",
             limit,
             sampling,
-            parallelism,
+            concurrency,
             force = false,
             questionIds,
             phases = ["ingest", "indexing", "search", "answer", "evaluate", "report"],
@@ -127,7 +127,7 @@ export class Orchestrator {
                 benchmarkName,
                 judgeModel,
                 answeringModel,
-                { limit, sampling, parallelism, status: "initializing" }
+                { limit, sampling, concurrency, status: "initializing" }
             )
             logger.info("Created checkpoint (initializing)")
         }

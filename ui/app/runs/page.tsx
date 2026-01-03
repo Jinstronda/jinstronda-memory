@@ -9,6 +9,7 @@ import { FilterBar } from "@/components/filter-bar"
 import { DataTable, type Column } from "@/components/data-table"
 import { RunActionsMenu } from "@/components/run-actions-menu"
 import { CircularProgress } from "@/components/circular-progress"
+import { EmptyState, ListIcon } from "@/components/empty-state"
 
 const POLL_INTERVAL = 2000 // 2 seconds
 
@@ -214,8 +215,18 @@ export default function RunsPage() {
       key: "status",
       header: "Status",
       render: (run) => {
-        const isRunning = run.status === "running" || run.status === "pending" || run.status === "initializing"
-        const progress = run.summary.total > 0 ? run.summary.evaluated / run.summary.total : 0
+        const isRunning = run.status === "running" || run.status === "pending" || run.status === "initializing" || run.status === "stopping"
+        const s = run.summary
+        const phasesCompleted = s.ingested + s.indexed + s.searched + s.answered + s.evaluated
+        const totalPhases = 5 * s.total
+        const progress = totalPhases > 0 ? phasesCompleted / totalPhases : 0
+
+        let phasesFullyComplete = 0
+        if (s.ingested === s.total) phasesFullyComplete++
+        if (s.indexed === s.total) phasesFullyComplete++
+        if (s.searched === s.total) phasesFullyComplete++
+        if (s.answered === s.total) phasesFullyComplete++
+        if (s.evaluated === s.total) phasesFullyComplete++
 
         return (
           <div className="flex items-center gap-2">
@@ -225,9 +236,9 @@ export default function RunsPage() {
             <span className={cn("badge", getStatusColor(run.status))}>
               {run.status}
             </span>
-            {isRunning && (
+            {isRunning && s.total > 0 && (
               <span className="text-text-muted text-xs font-mono">
-                {run.summary.evaluated}/{run.summary.total}
+                {phasesFullyComplete}/5
               </span>
             )}
           </div>
@@ -343,25 +354,23 @@ export default function RunsPage() {
           </button>
         </div>
       ) : runs.length === 0 ? (
-        <div className="text-center py-12">
-          <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-bg-elevated flex items-center justify-center">
-            <svg className="w-8 h-8 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 12h16.5m-16.5 3.75h16.5M3.75 19.5h16.5M5.625 4.5h12.75a1.875 1.875 0 010 3.75H5.625a1.875 1.875 0 010-3.75z" />
-            </svg>
-          </div>
-          <h3 className="text-lg font-medium text-text-primary mb-4">No runs yet.</h3>
-          <Link
-            href="/runs/new"
-            className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium transition-all font-display tracking-tight text-white border border-transparent hover:border-white/30"
-            style={{
-              background: "linear-gradient(135deg, rgb(38, 123, 241) 40%, rgb(21, 70, 139) 100%)",
-              boxShadow: "rgba(255, 255, 255, 0.25) 2px 2px 8px 0px inset, rgba(0, 0, 0, 0.15) -2px -2px 7px 0px inset",
-            }}
-          >
-            <span className="text-lg leading-none">+</span>
-            <span>New Run</span>
-          </Link>
-        </div>
+        <EmptyState
+          icon={<ListIcon />}
+          title="No runs yet"
+          action={
+            <Link
+              href="/runs/new"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-sm font-medium transition-all font-display tracking-tight text-white border border-transparent hover:border-white/30"
+              style={{
+                background: "linear-gradient(135deg, rgb(38, 123, 241) 40%, rgb(21, 70, 139) 100%)",
+                boxShadow: "rgba(255, 255, 255, 0.25) 2px 2px 8px 0px inset, rgba(0, 0, 0, 0.15) -2px -2px 7px 0px inset",
+              }}
+            >
+              <span className="text-lg leading-none">+</span>
+              <span>New Run</span>
+            </Link>
+          }
+        />
       ) : (
         <DataTable
           columns={columns}

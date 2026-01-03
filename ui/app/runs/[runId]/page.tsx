@@ -346,34 +346,6 @@ export default function RunDetailPage() {
               },
             ]}
           />
-
-          {run.parallelism && (run.parallelism.default !== undefined ||
-                               run.parallelism.ingest !== undefined ||
-                               run.parallelism.indexing !== undefined ||
-                               run.parallelism.search !== undefined ||
-                               run.parallelism.answer !== undefined ||
-                               run.parallelism.evaluate !== undefined) && (
-            <div className="p-4 bg-[#1a1a1a] border border-[#333333] rounded">
-              <h3 className="text-sm font-semibold text-text-primary mb-3">Performance Configuration</h3>
-              <div className="grid grid-cols-6 gap-3 text-xs">
-                {run.parallelism.default !== undefined && (
-                  <div>
-                    <span className="text-text-muted">Default:</span>
-                    <span className="ml-2 text-text-primary font-medium">{run.parallelism.default}</span>
-                  </div>
-                )}
-                {(["ingest", "indexing", "search", "answer", "evaluate"] as const).map(phase => (
-                  run.parallelism?.[phase] !== undefined && (
-                    <div key={phase}>
-                      <span className="text-text-muted capitalize">{phase}:</span>
-                      <span className="ml-2 text-text-primary font-medium">{run.parallelism[phase]}</span>
-                    </div>
-                  )
-                ))}
-              </div>
-            </div>
-          )}
-
           <AccuracyByType byQuestionType={report?.byQuestionType} />
           <LatencyTable latency={report?.latency} />
           <RetrievalMetrics retrieval={report?.retrieval} byQuestionType={report?.byQuestionType} />

@@ -1,6 +1,6 @@
 import { existsSync } from "fs"
 import { join } from "path"
-import { getAvailableProviders } from "../../providers"
+import { getAvailableProviders, getProviderInfo } from "../../providers"
 import { getAvailableBenchmarks, createBenchmark } from "../../benchmarks"
 import { MODEL_ALIASES, listModelsByProvider } from "../../utils/models"
 import { getActiveRunsWithBenchmarks } from "../runState"
@@ -20,10 +20,7 @@ export async function handleBenchmarksRoutes(req: Request, url: URL): Promise<Re
     if (method === "GET" && pathname === "/api/providers") {
         const providers = getAvailableProviders()
         return json({
-            providers: providers.map(name => ({
-                name,
-                displayName: name.charAt(0).toUpperCase() + name.slice(1),
-            })),
+            providers: providers.map(name => getProviderInfo(name)),
         })
     }
 
@@ -41,7 +38,6 @@ export async function handleBenchmarksRoutes(req: Request, url: URL): Promise<Re
 
     // GET /api/downloads - Check for active downloads by observing filesystem
     if (method === "GET" && pathname === "/api/downloads") {
-        // Dataset paths for each benchmark
         const benchmarkDatasets: Record<string, { path: string; displayName: string }> = {
             longmemeval: {
                 path: "./data/benchmarks/longmemeval/datasets/longmemeval_s_cleaned.json",
@@ -52,16 +48,18 @@ export async function handleBenchmarksRoutes(req: Request, url: URL): Promise<Re
                 displayName: "LoCoMo",
             },
             convomem: {
-                path: "./data/benchmarks/convomem/datasets",
+                path: "./data/benchmarks/convomem/convomem_data.json",
                 displayName: "ConvoMem",
             },
         }
 
-        // Check active runs - if a run is active but dataset doesn't exist, it's downloading
         const activeRuns = getActiveRunsWithBenchmarks()
         const downloads: Array<{ benchmark: string; displayName: string; runId: string }> = []
+        const seenBenchmarks = new Set<string>()
 
         for (const { runId, benchmark } of activeRuns) {
+            if (seenBenchmarks.has(benchmark)) continue
+
             const datasetInfo = benchmarkDatasets[benchmark]
             if (datasetInfo) {
                 const fullPath = join(process.cwd(), datasetInfo.path)
@@ -71,6 +69,7 @@ export async function handleBenchmarksRoutes(req: Request, url: URL): Promise<Re
                         displayName: datasetInfo.displayName,
                         runId,
                     })
+                    seenBenchmarks.add(benchmark)
                 }
             }
         }

@@ -16,6 +16,11 @@ export interface RunSummary {
     searched: number
     answered: number
     evaluated: number
+    indexingEpisodes?: {
+      total: number
+      completed: number
+      failed: number
+    }
   }
   accuracy: number | null
 }
@@ -42,6 +47,7 @@ export interface RunDetail extends RunSummary {
 export interface Provider {
   name: string
   displayName: string
+  concurrency: ConcurrencyConfig | null
 }
 
 export interface Benchmark {
@@ -141,7 +147,7 @@ export interface SamplingConfig {
   limit?: number
 }
 
-export interface ParallelismConfig {
+export interface ConcurrencyConfig {
   default?: number
   ingest?: number
   indexing?: number
@@ -158,7 +164,7 @@ export async function startRun(params: {
   answeringModel?: string
   limit?: number
   sampling?: SamplingConfig
-  parallelism?: ParallelismConfig
+  concurrency?: ConcurrencyConfig
   force?: boolean
   fromPhase?: PhaseId
   sourceRunId?: string
@@ -214,6 +220,7 @@ export interface LatencyStats {
 
 export interface LatencyByPhase {
   ingest: LatencyStats
+  indexing: LatencyStats
   search: LatencyStats
   answer: LatencyStats
   evaluate: LatencyStats
@@ -297,7 +304,7 @@ export async function getActiveDownloads(): Promise<DownloadsResponse> {
 }
 
 // Compares
-export type CompareStatus = "pending" | "running" | "completed" | "failed" | "partial"
+export type CompareStatus = "pending" | "running" | "stopping" | "completed" | "failed" | "partial"
 
 export interface CompareRunInfo {
   provider: string
@@ -311,8 +318,27 @@ export interface CompareRunInfo {
     indexed: number
     searched: number
     answered: number
+    indexingEpisodes?: {
+      total: number
+      completed: number
+      failed: number
+    }
     evaluated: number
   }
+}
+
+export interface CompareRunProgress {
+  provider: string
+  runId: string
+  progress: {
+    total: number
+    ingested: number
+    indexed: number
+    searched: number
+    answered: number
+    evaluated: number
+  }
+  status: string
 }
 
 export interface CompareSummary {
@@ -325,6 +351,7 @@ export interface CompareSummary {
   createdAt: string
   updatedAt: string
   accuracy: number | null
+  runProgress?: CompareRunProgress[]
 }
 
 export interface CompareDetail extends CompareSummary {

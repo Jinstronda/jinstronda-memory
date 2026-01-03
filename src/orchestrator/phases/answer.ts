@@ -12,8 +12,8 @@ import { logger } from "../../utils/logger"
 import { getModelConfig, ModelConfig, DEFAULT_ANSWERING_MODEL } from "../../utils/models"
 import { buildDefaultAnswerPrompt } from "../../prompts/defaults"
 import { buildContextString } from "../../types/prompts"
-import { ParallelExecutor } from "../parallel"
-import { resolveParallelism } from "../../types/parallelism"
+import { ConcurrentExecutor } from "../concurrent"
+import { resolveConcurrency } from "../../types/concurrency"
 
 type LanguageModel = ReturnType<typeof createOpenAI> | ReturnType<typeof createAnthropic> | ReturnType<typeof createGoogleGenerativeAI>
 
@@ -80,15 +80,15 @@ export async function runAnswerPhase(
     }
 
     const { client, modelConfig } = getAnsweringModel(checkpoint.answeringModel)
-    const concurrency = resolveParallelism(
+    const concurrency = resolveConcurrency(
         "answer",
-        checkpoint.parallelism,
-        provider?.defaultParallelism
+        checkpoint.concurrency,
+        provider?.concurrency
     )
 
     logger.info(`Generating answers for ${pendingQuestions.length} questions using ${modelConfig.displayName} (concurrency: ${concurrency})...`)
 
-    await ParallelExecutor.executeParallel(
+    await ConcurrentExecutor.execute(
         pendingQuestions,
         concurrency,
         checkpoint.runId,

@@ -1,6 +1,6 @@
 import type { SearchResult, RetrievalMetrics } from "./unified"
 import type { IngestResult } from "./provider"
-import type { ParallelismConfig } from "./parallelism"
+import type { ConcurrencyConfig } from "./concurrency"
 
 export type PhaseStatus = "pending" | "in_progress" | "completed" | "failed"
 
@@ -26,6 +26,8 @@ export interface IngestPhaseCheckpoint {
 
 export interface IndexingPhaseCheckpoint {
     status: PhaseStatus
+    completedIds?: string[]
+    failedIds?: string[]
     startedAt?: string
     completedAt?: string
     durationMs?: number
@@ -112,6 +114,6 @@ export interface RunCheckpoint {
     limit?: number
     sampling?: SamplingConfig
     targetQuestionIds?: string[]
-    parallelism?: ParallelismConfig
+    concurrency?: ConcurrencyConfig
     questions: Record<string, QuestionCheckpoint>
 }

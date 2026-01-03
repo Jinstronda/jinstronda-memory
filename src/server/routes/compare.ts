@@ -4,6 +4,7 @@ import { CheckpointManager } from "../../orchestrator/checkpoint"
 import { batchManager } from "../../orchestrator/batch"
 import type { CompareManifest } from "../../orchestrator/batch"
 import { wsManager } from "../index"
+import { getRunState } from "../runState"
 import type { ProviderName } from "../../types/provider"
 import type { BenchmarkName } from "../../types/benchmark"
 import type { SamplingConfig } from "../../types/checkpoint"
@@ -89,7 +90,7 @@ export async function handleCompareRoutes(req: Request, url: URL): Promise<Respo
                         return {
                             provider: run.provider,
                             runId: run.runId,
-                            summary: { total: 0, evaluated: 0 },
+                            progress: { total: 0, evaluated: 0 },
                             status: "pending",
                         }
                     }
@@ -98,7 +99,7 @@ export async function handleCompareRoutes(req: Request, url: URL): Promise<Respo
                     return {
                         provider: run.provider,
                         runId: run.runId,
-                        summary,
+                        progress: summary,
                         status,
                     }
                 })
@@ -136,6 +137,7 @@ export async function handleCompareRoutes(req: Request, url: URL): Promise<Respo
                 }
             })
             .filter(Boolean)
+            .sort((a: any, b: any) => (b.createdAt || "").localeCompare(a.createdAt || ""))
 
         return json(compareDetails)
     }
@@ -153,8 +155,8 @@ export async function handleCompareRoutes(req: Request, url: URL): Promise<Respo
                 return json({ error: "Missing required fields: benchmark, judgeModel, answeringModel" }, 400)
             }
 
-            // Start the comparison asynchronously
-            runComparison({
+            // Initialize comparison and wait for manifest + checkpoints to be created
+            const { compareId } = await initializeComparison({
                 providers: providers as ProviderName[],
                 benchmark: benchmark as BenchmarkName,
                 judgeModel,
@@ -163,7 +165,7 @@ export async function handleCompareRoutes(req: Request, url: URL): Promise<Respo
                 force,
             })
 
-            return json({ message: "Comparison started" })
+            return json({ message: "Comparison started", compareId })
         } catch (e) {
             return json({ error: e instanceof Error ? e.message : "Invalid request body" }, 400)
         }
@@ -203,7 +205,7 @@ export async function handleCompareRoutes(req: Request, url: URL): Promise<Respo
                 provider: run.provider,
                 runId: run.runId,
                 status,
-                summary,
+                progress: summary,
                 accuracy,
             }
         })
@@ -321,6 +323,20 @@ export async function handleCompareRoutes(req: Request, url: URL): Promise<Respo
 }
 
 function getRunStatus(checkpoint: any, summary: any): string {
+    // Active process takes priority
+    const runState = getRunState(checkpoint.runId)
+    if (runState) {
+        return runState.status  // "running" or "stopping"
+    }
+
+    // Use persisted status from checkpoint (handles crash/stop cases)
+    if (checkpoint.status === "completed") {
+        return "completed"
+    }
+    if (checkpoint.status === "failed") {
+        return "failed"
+    }
+
     // Check if any question has a failed phase
     const questions = Object.values(checkpoint.questions || {}) as any[]
     const hasFailed = questions.some((q: any) => {
@@ -341,59 +357,50 @@ function getRunStatus(checkpoint: any, summary: any): string {
     if (summary.evaluated === summary.total && summary.total > 0) {
         return "completed"
     }
+
+    // If checkpoint was ever started (status changed from initializing), it's partial
+    if (checkpoint.status === "running" || checkpoint.status === "initializing") {
+        // Was started but no active process - must have crashed/stopped
+        if (summary.ingested > 0 || checkpoint.status === "running") {
+            return "partial"
+        }
+        return "pending"
+    }
+
     if (summary.ingested === 0) {
         return "pending"
     }
-    return "running"
+    return "partial"
 }
 
-async function runComparison(options: {
+async function initializeComparison(options: {
     providers: ProviderName[]
     benchmark: BenchmarkName
     judgeModel: string
     answeringModel: string
     sampling?: SamplingConfig
     force?: boolean
-}) {
-    let compareId: string | undefined
+}): Promise<{ compareId: string }> {
+    const result = await batchManager.compare(options)
+    const compareId = result.compareId
 
-    try {
-        const result = await batchManager.compare(options)
-        compareId = result.compareId
+    startCompare(compareId, options.benchmark, result.manifest.runs.map(r => r.runId))
 
-        // Track the comparison
-        startCompare(compareId, options.benchmark, result.manifest.runs.map(r => r.runId))
+    wsManager.broadcast({
+        type: "compare_started",
+        compareId,
+        benchmark: options.benchmark,
+        providers: options.providers,
+    })
 
-        wsManager.broadcast({
-            type: "compare_started",
-            compareId,
-            benchmark: options.benchmark,
-            providers: options.providers,
-        })
+    wsManager.broadcast({
+        type: "compare_complete",
+        compareId,
+    })
 
-        // Wait for completion or stop signal
-        // The batchManager.compare() already runs all providers in parallel
+    endCompare(compareId)
 
-        wsManager.broadcast({
-            type: "compare_complete",
-            compareId,
-        })
-    } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown error"
-        const wasStoppedByUser = message.includes("stopped by user")
-
-        if (compareId) {
-            wsManager.broadcast({
-                type: wasStoppedByUser ? "compare_stopped" : "error",
-                compareId,
-                message,
-            })
-        }
-    } finally {
-        if (compareId) {
-            endCompare(compareId)
-        }
-    }
+    return { compareId }
 }
 
 async function resumeComparison(compareId: string) {

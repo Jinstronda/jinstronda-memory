@@ -1,4 +1,5 @@
 import type { Provider, ProviderName } from "../types/provider"
+import type { ConcurrencyConfig } from "../types/concurrency"
 import { SupermemoryProvider } from "./supermemory"
 import { Mem0Provider } from "./mem0"
 import { ZepProvider } from "./zep"
@@ -19,6 +20,15 @@ export function createProvider(name: ProviderName): Provider {
 
 export function getAvailableProviders(): ProviderName[] {
     return Object.keys(providers) as ProviderName[]
+}
+
+export function getProviderInfo(name: ProviderName): { name: string; displayName: string; concurrency: ConcurrencyConfig | null } {
+    const provider = createProvider(name)
+    return {
+        name,
+        displayName: name.charAt(0).toUpperCase() + name.slice(1),
+        concurrency: provider.concurrency || null,
+    }
 }
 
 export { SupermemoryProvider, Mem0Provider, ZepProvider }

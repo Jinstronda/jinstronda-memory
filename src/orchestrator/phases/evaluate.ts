@@ -4,8 +4,8 @@ import type { RunCheckpoint } from "../../types/checkpoint"
 import type { Provider } from "../../types/provider"
 import { CheckpointManager } from "../checkpoint"
 import { logger } from "../../utils/logger"
-import { ParallelExecutor } from "../parallel"
-import { resolveParallelism } from "../../types/parallelism"
+import { ConcurrentExecutor } from "../concurrent"
+import { resolveConcurrency } from "../../types/concurrency"
 import { calculateRetrievalMetrics } from "./retrieval-eval"
 
 export async function runEvaluatePhase(
@@ -33,15 +33,15 @@ export async function runEvaluatePhase(
         return
     }
 
-    const concurrency = resolveParallelism(
+    const concurrency = resolveConcurrency(
         "evaluate",
-        checkpoint.parallelism,
-        provider?.defaultParallelism
+        checkpoint.concurrency,
+        provider?.concurrency
     )
 
     logger.info(`Evaluating ${pendingQuestions.length} questions with ${judge.name} (concurrency: ${concurrency})...`)
 
-    await ParallelExecutor.executeParallel(
+    await ConcurrentExecutor.execute(
         pendingQuestions,
         concurrency,
         checkpoint.runId,

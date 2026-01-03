@@ -124,6 +124,7 @@ export interface RetrievalStats {
 export interface LatencyTableProps {
   latency?: {
     ingest?: LatencyStats
+    indexing?: LatencyStats
     search?: LatencyStats
     answer?: LatencyStats
     evaluate?: LatencyStats
@@ -151,7 +152,7 @@ export function LatencyTable({ latency }: LatencyTableProps) {
             </tr>
           </thead>
           <tbody>
-            {(["ingest", "search", "answer", "evaluate", "total"] as const).map(phase => {
+            {(["ingest", "indexing", "search", "answer", "evaluate", "total"] as const).map(phase => {
               const stats = latency[phase]
               if (!stats) return null
               return (
