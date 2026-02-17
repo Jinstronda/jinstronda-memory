@@ -89,6 +89,7 @@ export async function compareCommand(args: string[]): Promise<void> {
     console.log("")
     console.log("Examples:")
     console.log("  bun run src/index.ts compare -p supermemory,mem0,zep -b locomo -s 5")
+    console.log("  bun run src/index.ts compare -p supermemory,filesystem,rag -b locomo -s 5")
     console.log("  bun run src/index.ts compare --compare-id compare-20251222-103045")
     return
   }
