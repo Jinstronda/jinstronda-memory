@@ -1,0 +1,31 @@
+name: CI - Type Check, Format & Lint
+
+on:
+  pull_request:
+
+jobs:
+  quality-checks:
+    name: Quality Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.17
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Setup Biome
+        uses: biomejs/setup-biome@v2
+        with:
+          version: 2.3.8
+
+      - name: Run TypeScript type checking
+        run: bun run check-types
+
+      - name: Run Biome CI (format & lint)
+        run: biome ci .

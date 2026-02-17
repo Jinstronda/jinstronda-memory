@@ -1,0 +1,26 @@
+{
+	"name": "openclaw-mem0-memory",
+	"version": "1.0.0",
+	"type": "module",
+	"description": "OpenClaw long-term memory plugin powered by Mem0",
+	"license": "MIT",
+	"dependencies": {
+		"@sinclair/typebox": "0.34.47"
+	},
+	"scripts": {
+		"check-types": "tsc --noEmit",
+		"lint": "bunx @biomejs/biome ci .",
+		"lint:fix": "bunx @biomejs/biome check --write ."
+	},
+	"peerDependencies": {
+		"openclaw": ">=2026.1.29"
+	},
+	"openclaw": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"devDependencies": {
+		"typescript": "^5.9.3"
+	}
+}

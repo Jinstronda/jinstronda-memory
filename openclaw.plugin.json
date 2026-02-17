@@ -1,0 +1,89 @@
+{
+	"id": "openclaw-mem0-memory",
+	"kind": "memory",
+	"uiHints": {
+		"mem0Url": {
+			"label": "Mem0 Server URL",
+			"placeholder": "http://localhost:8080",
+			"help": "URL of your local Mem0 REST server"
+		},
+		"userId": {
+			"label": "User ID",
+			"placeholder": "openclaw_myhostname",
+			"help": "Memory namespace / user scope. Default: openclaw_{hostname}."
+		},
+		"autoRecall": {
+			"label": "Auto-Recall",
+			"help": "Inject relevant memories + user profile before every AI turn"
+		},
+		"autoCapture": {
+			"label": "Auto-Capture",
+			"help": "Automatically store important information from conversations"
+		},
+		"maxRecallResults": {
+			"label": "Max Recall Results",
+			"placeholder": "10",
+			"help": "Maximum memories injected into context per turn",
+			"advanced": true
+		},
+		"profileFrequency": {
+			"label": "Profile Injection Frequency",
+			"placeholder": "50",
+			"help": "Inject full profile (static + dynamic) every N turns. Search results are injected every turn.",
+			"advanced": true
+		},
+		"captureMode": {
+			"label": "Capture Mode",
+			"help": "'all' (default) = filter out short texts and injected context, 'everything' = capture all messages",
+			"advanced": true
+		},
+		"debug": {
+			"label": "Debug Logging",
+			"help": "Enable verbose debug logs for API calls and responses",
+			"advanced": true
+		},
+		"enableCustomContainerTags": {
+			"label": "Enable Custom Container Tags",
+			"help": "Enable AI-driven routing to custom containers",
+			"advanced": true
+		},
+		"customContainers": {
+			"label": "Custom Containers",
+			"help": "Define custom containers with tags and descriptions for AI routing",
+			"advanced": true
+		},
+		"customContainerInstructions": {
+			"label": "Container Instructions",
+			"help": "Instructions for AI on how to route memories to custom containers",
+			"advanced": true
+		}
+	},
+	"configSchema": {
+		"type": "object",
+		"additionalProperties": false,
+		"properties": {
+			"mem0Url": { "type": "string" },
+			"userId": { "type": "string" },
+			"autoRecall": { "type": "boolean" },
+			"autoCapture": { "type": "boolean" },
+			"maxRecallResults": { "type": "number", "minimum": 1, "maximum": 20 },
+			"profileFrequency": { "type": "number", "minimum": 1, "maximum": 500 },
+			"captureMode": { "type": "string", "enum": ["everything", "all"] },
+			"debug": { "type": "boolean" },
+			"enableCustomContainerTags": { "type": "boolean" },
+			"customContainers": {
+				"type": "array",
+				"items": {
+					"type": "object",
+					"properties": {
+						"tag": { "type": "string" },
+						"description": { "type": "string" }
+					},
+					"required": ["tag", "description"]
+				}
+			},
+			"customContainerInstructions": { "type": "string" }
+		},
+		"required": []
+	}
+}
