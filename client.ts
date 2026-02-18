@@ -1,25 +1,13 @@
 import { log } from "./logger.ts"
 import { sanitizeContent, sanitizeMetadata } from "./sanitize.ts"
 
-const RELEVANCE_WEIGHT = 0.4
-const RECENCY_WEIGHT = 0.35
-const IMPORTANCE_WEIGHT = 0.25
-const RECENCY_HALF_LIFE_MS = 7 * 86400000 // 7 days
-
-const IMPORTANCE_BY_TYPE: Record<string, number> = {
-	preference: 0.9,
-	decision: 0.85,
-	entity: 0.7,
-	fact: 0.6,
-	other: 0.4,
-}
+const RECENT_THRESHOLD_MS = 7 * 86400000 // 7 days
 
 export type SearchResult = {
 	id: string
 	content: string
 	memory?: string
 	similarity?: number
-	score?: number
 	metadata?: Record<string, unknown>
 }
 
@@ -38,30 +26,6 @@ export type ProfileResult = {
 
 function limitText(text: string, max: number): string {
 	return text.length > max ? `${text.slice(0, max)}...` : text
-}
-
-function recencyDecay(ageMs: number): number {
-	return Math.exp((-Math.LN2 * ageMs) / RECENCY_HALF_LIFE_MS)
-}
-
-function importanceScore(metadata?: Record<string, unknown>): number {
-	const memType = (metadata?.type as string) ?? "other"
-	return IMPORTANCE_BY_TYPE[memType] ?? 0.4
-}
-
-export function scoreMemory(result: SearchResult, now = Date.now()): number {
-	const relevance = result.similarity ?? 0.5
-	const ts =
-		(result.metadata?.updated_at as string) ??
-		(result.metadata?.created_at as string)
-	const ageMs = ts ? now - new Date(ts).getTime() : Number.POSITIVE_INFINITY
-	const recency = Number.isFinite(ageMs) ? recencyDecay(ageMs) : 0
-	const importance = importanceScore(result.metadata)
-	return (
-		RELEVANCE_WEIGHT * relevance +
-		RECENCY_WEIGHT * recency +
-		IMPORTANCE_WEIGHT * importance
-	)
 }
 
 export class Mem0Client {
@@ -135,6 +99,7 @@ export class Mem0Client {
 			query,
 			user_id: uid,
 			top_k: limit,
+			rerank: true,
 		})) as { results?: Array<Record<string, unknown>> }
 
 		const raw = response.results ?? []
@@ -160,21 +125,20 @@ export class Mem0Client {
 			unique.map((ns) => this.search(query, limit, ns)),
 		)
 
+		// dedup by id, keep highest similarity (reranker score)
 		const seen = new Set<string>()
 		const merged: SearchResult[] = []
-		const now = Date.now()
 
 		for (const batch of all) {
 			for (const r of batch) {
 				const key = r.id || r.content
 				if (seen.has(key)) continue
 				seen.add(key)
-				r.score = scoreMemory(r, now)
 				merged.push(r)
 			}
 		}
 
-		merged.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+		merged.sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
 		return merged.slice(0, limit)
 	}
 
@@ -195,35 +159,18 @@ export class Mem0Client {
 		const staticFacts: string[] = []
 		const dynamicFacts: string[] = []
 
-		// score and sort all memories by weighted formula
-		const scored = allMemories
-			.filter((mem) => mem.memory ?? mem.content)
-			.map((mem) => {
-				const result: SearchResult = {
-					id: mem.id,
-					content: mem.content,
-					memory: mem.memory,
-					similarity: 0.5, // neutral relevance for list results
-					metadata: mem.metadata,
-				}
-				return {
-					text: mem.memory ?? mem.content ?? "",
-					score: scoreMemory(result, now),
-					metadata: mem.metadata,
-				}
-			})
-			.sort((a, b) => b.score - a.score)
+		for (const mem of allMemories) {
+			const text = mem.memory ?? mem.content ?? ""
+			if (!text) continue
 
-		for (const mem of scored) {
 			const ts =
 				(mem.metadata?.updated_at as string) ??
 				(mem.metadata?.created_at as string)
 			const age = ts ? now - new Date(ts).getTime() : Number.POSITIVE_INFINITY
-			// high recency (< 7 days) = dynamic, else static
-			if (Number.isFinite(age) && age < RECENCY_HALF_LIFE_MS) {
-				dynamicFacts.push(mem.text)
+			if (Number.isFinite(age) && age < RECENT_THRESHOLD_MS) {
+				dynamicFacts.push(text)
 			} else {
-				staticFacts.push(mem.text)
+				staticFacts.push(text)
 			}
 		}
 

@@ -192,7 +192,7 @@ export function buildRecallHandler(client: Mem0Client, cfg: Mem0Config) {
 			const crossNamespaceResults = searchResults.map((r) => ({
 				memory: r.memory ?? r.content,
 				updatedAt: r.metadata?.updated_at as string | undefined,
-				similarity: r.score ?? r.similarity,
+				similarity: r.similarity,
 			}))
 
 			const memoryContext = formatContext(
