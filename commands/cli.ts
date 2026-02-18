@@ -18,8 +18,7 @@ export function registerCliSetup(api: OpenClawPluginApi): void {
 				.command("status")
 				.description("Check Mem0 configuration status")
 				.action(async () => {
-					const defaultUserId =
-						"openclaw_" + os.hostname().replace(/[^a-zA-Z0-9_]/g, "_")
+					const defaultUserId = `openclaw_${os.hostname().replace(/[^a-zA-Z0-9_]/g, "_")}`
 
 					console.log("\nMem0 Memory Status\n")
 
@@ -50,30 +49,33 @@ export function registerCliSetup(api: OpenClawPluginApi): void {
 						? pluginConfig.customContainers
 						: []
 
-					console.log("  Enabled:          " + enabled)
+					console.log(`  Enabled:          ${enabled}`)
 					console.log(
 						"  Mem0 URL:         " +
 							(pluginConfig.mem0Url ?? "http://localhost:8080"),
 					)
 					console.log(
-						"  User ID:          " + (pluginConfig.userId ?? defaultUserId),
+						`  User ID:          ${pluginConfig.userId ?? defaultUserId}`,
+					)
+					console.log(`  Auto-recall:      ${pluginConfig.autoRecall ?? true}`)
+					console.log(`  Auto-capture:     ${pluginConfig.autoCapture ?? true}`)
+					console.log(
+						`  Max results:      ${pluginConfig.maxRecallResults ?? 10}`,
 					)
 					console.log(
-						"  Auto-recall:      " + (pluginConfig.autoRecall ?? true),
+						`  Profile freq:     ${pluginConfig.profileFrequency ?? 50}`,
 					)
 					console.log(
-						"  Auto-capture:     " + (pluginConfig.autoCapture ?? true),
+						`  Capture mode:     ${pluginConfig.captureMode ?? "all"}`,
 					)
 					console.log(
-						"  Max results:      " + (pluginConfig.maxRecallResults ?? 10),
+						"  Shared User ID:   " +
+							(pluginConfig.sharedUserId ?? "(same as userId)"),
 					)
 					console.log(
-						"  Profile freq:     " + (pluginConfig.profileFrequency ?? 50),
+						`  Inherit shared:   ${pluginConfig.inheritSharedMemory ?? true}`,
 					)
-					console.log(
-						"  Capture mode:     " + (pluginConfig.captureMode ?? "all"),
-					)
-					console.log("  Custom containers: " + customContainers.length)
+					console.log(`  Custom containers: ${customContainers.length}`)
 					console.log("")
 				})
 		},
@@ -101,7 +103,7 @@ export function registerCli(
 				.option("--limit <n>", "Max results", "5")
 				.action(async (query: string, opts: { limit: string }) => {
 					const limit = Number.parseInt(opts.limit, 10) || 5
-					log.debug('cli search: query="' + query + '" limit=' + limit)
+					log.debug(`cli search: query="${query}" limit=${limit}`)
 
 					const results = await client.search(query, limit)
 
@@ -112,9 +114,9 @@ export function registerCli(
 
 					for (const r of results) {
 						const score = r.similarity
-							? " (" + (r.similarity * 100).toFixed(0) + "%)"
+							? ` (${(r.similarity * 100).toFixed(0)}%)`
 							: ""
-						console.log("- " + (r.content || r.memory || "") + score)
+						console.log(`- ${r.content || r.memory || ""}${score}`)
 					}
 				})
 
@@ -122,7 +124,7 @@ export function registerCli(
 				.command("profile")
 				.option("--query <q>", "Optional query to focus the profile")
 				.action(async (opts: { query?: string }) => {
-					log.debug('cli profile: query="' + (opts.query ?? "(none)") + '"')
+					log.debug(`cli profile: query="${opts.query ?? "(none)"}"`)
 
 					const profile = await client.getProfile(opts.query)
 
@@ -134,14 +136,14 @@ export function registerCli(
 					if (profile.static.length > 0) {
 						console.log("Stable Preferences:")
 						for (const f of profile.static) {
-							console.log("  - " + f)
+							console.log(`  - ${f}`)
 						}
 					}
 
 					if (profile.dynamic.length > 0) {
 						console.log("Recent Context:")
 						for (const f of profile.dynamic) {
-							console.log("  - " + f)
+							console.log(`  - ${f}`)
 						}
 					}
 				})
@@ -171,11 +173,9 @@ export function registerCli(
 						return
 					}
 
-					log.debug('cli wipe: userId="' + userId + '"')
+					log.debug(`cli wipe: userId="${userId}"`)
 					const result = await client.wipeAllMemories()
-					console.log(
-						"Wiped " + result.deletedCount + ' memories for "' + userId + '".',
-					)
+					console.log(`Wiped ${result.deletedCount} memories for "${userId}".`)
 				})
 		},
 		{ commands: ["mem0"] },

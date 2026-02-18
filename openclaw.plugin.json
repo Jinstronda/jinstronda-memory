@@ -14,7 +14,7 @@
 		},
 		"sharedUserId": {
 			"label": "Shared User ID",
-			"placeholder": "jinstronda",
+			"placeholder": "shared_memory",
 			"help": "Shared memory namespace readable by all agents. Defaults to userId."
 		},
 		"inheritSharedMemory": {

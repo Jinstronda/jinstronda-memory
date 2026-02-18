@@ -57,12 +57,12 @@ export default {
 			id: "openclaw-mem0-memory",
 			start: async () => {
 				try {
-					const res = await fetch(cfg.mem0Url + "/health")
+					const res = await fetch(`${cfg.mem0Url}/health`)
 					if (res.ok) {
-						api.logger.info("mem0: connected to " + cfg.mem0Url)
+						api.logger.info(`mem0: connected to ${cfg.mem0Url}`)
 					} else {
 						api.logger.warn(
-							"mem0: server returned " + res.status + ", memory may not work",
+							`mem0: server returned ${res.status}, memory may not work`,
 						)
 					}
 				} catch {

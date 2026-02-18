@@ -184,7 +184,7 @@ export function buildRecallHandler(client: Mem0Client, cfg: Mem0Config) {
 					: [cfg.userId]
 
 			const [profile, searchResults] = await Promise.all([
-				client.getProfile(prompt),
+				client.getProfile(),
 				client.searchMultiple(prompt, cfg.maxRecallResults, namespaces),
 			])
 

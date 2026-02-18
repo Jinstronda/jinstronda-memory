@@ -131,7 +131,7 @@ export class Mem0Client {
 
 		for (const batch of all) {
 			for (const r of batch) {
-				const key = r.id || r.content
+				const key = r.id ? `id:${r.id}` : `content:${r.content}`
 				if (seen.has(key)) continue
 				seen.add(key)
 				merged.push(r)

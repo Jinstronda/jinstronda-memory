@@ -29,10 +29,11 @@ export function sanitizeMetadata(
 
 		if (typeof val === "boolean" || typeof val === "number") {
 			clean[key] = val
+			count++
 		} else if (typeof val === "string") {
 			clean[key] = val.slice(0, MAX_VALUE_LENGTH)
+			count++
 		}
-		count++
 	}
 
 	return clean
