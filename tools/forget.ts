@@ -24,8 +24,7 @@ export function registerForgetTool(
 				),
 				userId: Type.Optional(
 					Type.String({
-						description:
-							"Optional user ID to delete from a specific scope",
+						description: "Optional user ID to delete from a specific scope",
 					}),
 				),
 			}),
@@ -34,9 +33,7 @@ export function registerForgetTool(
 				params: { query?: string; memoryId?: string; userId?: string },
 			) {
 				if (params.memoryId) {
-					log.debug(
-						`forget tool: direct delete id="${params.memoryId}"`,
-					)
+					log.debug(`forget tool: direct delete id="${params.memoryId}"`)
 					await client.deleteMemory(params.memoryId)
 					return {
 						content: [{ type: "text" as const, text: "Memory forgotten." }],
@@ -47,10 +44,7 @@ export function registerForgetTool(
 					log.debug(
 						`forget tool: search-then-delete query="${params.query}" userId="${params.userId ?? "default"}"`,
 					)
-					const result = await client.forgetByQuery(
-						params.query,
-						params.userId,
-					)
+					const result = await client.forgetByQuery(params.query, params.userId)
 					return {
 						content: [{ type: "text" as const, text: result.message }],
 					}

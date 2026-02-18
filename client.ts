@@ -1,10 +1,25 @@
 import { log } from "./logger.ts"
+import { sanitizeContent, sanitizeMetadata } from "./sanitize.ts"
+
+const RELEVANCE_WEIGHT = 0.4
+const RECENCY_WEIGHT = 0.35
+const IMPORTANCE_WEIGHT = 0.25
+const RECENCY_HALF_LIFE_MS = 7 * 86400000 // 7 days
+
+const IMPORTANCE_BY_TYPE: Record<string, number> = {
+	preference: 0.9,
+	decision: 0.85,
+	entity: 0.7,
+	fact: 0.6,
+	other: 0.4,
+}
 
 export type SearchResult = {
 	id: string
 	content: string
 	memory?: string
 	similarity?: number
+	score?: number
 	metadata?: Record<string, unknown>
 }
 
@@ -23,6 +38,30 @@ export type ProfileResult = {
 
 function limitText(text: string, max: number): string {
 	return text.length > max ? `${text.slice(0, max)}...` : text
+}
+
+function recencyDecay(ageMs: number): number {
+	return Math.exp((-Math.LN2 * ageMs) / RECENCY_HALF_LIFE_MS)
+}
+
+function importanceScore(metadata?: Record<string, unknown>): number {
+	const memType = (metadata?.type as string) ?? "other"
+	return IMPORTANCE_BY_TYPE[memType] ?? 0.4
+}
+
+export function scoreMemory(result: SearchResult, now = Date.now()): number {
+	const relevance = result.similarity ?? 0.5
+	const ts =
+		(result.metadata?.updated_at as string) ??
+		(result.metadata?.created_at as string)
+	const ageMs = ts ? now - new Date(ts).getTime() : Number.POSITIVE_INFINITY
+	const recency = Number.isFinite(ageMs) ? recencyDecay(ageMs) : 0
+	const importance = importanceScore(result.metadata)
+	return (
+		RELEVANCE_WEIGHT * relevance +
+		RECENCY_WEIGHT * recency +
+		IMPORTANCE_WEIGHT * importance
+	)
 }
 
 export class Mem0Client {
@@ -62,17 +101,19 @@ export class Mem0Client {
 		userId?: string,
 	): Promise<{ id: string }> {
 		const uid = userId ?? this.userId
+		const cleaned = sanitizeContent(content)
+		const cleanMeta = metadata ? sanitizeMetadata(metadata) : undefined
 
 		log.debugRequest("add", {
-			contentLength: content.length,
-			metadata,
+			contentLength: cleaned.length,
+			metadata: cleanMeta,
 			userId: uid,
 		})
 
 		const result = (await this.request("POST", "/v1/memories/", {
-			messages: content,
+			messages: cleaned,
 			user_id: uid,
-			metadata: metadata ?? undefined,
+			metadata: cleanMeta,
 			infer: true,
 		})) as { ids?: string[]; results?: Array<{ id?: string }> }
 
@@ -109,10 +150,35 @@ export class Mem0Client {
 		return results
 	}
 
-	async getProfile(
-		query?: string,
-		userId?: string,
-	): Promise<ProfileResult> {
+	async searchMultiple(
+		query: string,
+		limit: number,
+		namespaces: string[],
+	): Promise<SearchResult[]> {
+		const unique = [...new Set(namespaces)]
+		const all = await Promise.all(
+			unique.map((ns) => this.search(query, limit, ns)),
+		)
+
+		const seen = new Set<string>()
+		const merged: SearchResult[] = []
+		const now = Date.now()
+
+		for (const batch of all) {
+			for (const r of batch) {
+				const key = r.id || r.content
+				if (seen.has(key)) continue
+				seen.add(key)
+				r.score = scoreMemory(r, now)
+				merged.push(r)
+			}
+		}
+
+		merged.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+		return merged.slice(0, limit)
+	}
+
+	async getProfile(query?: string, userId?: string): Promise<ProfileResult> {
 		const uid = userId ?? this.userId
 
 		log.debugRequest("profile", { userId: uid, query })
@@ -126,24 +192,38 @@ export class Mem0Client {
 		])
 
 		const now = Date.now()
-		const DAY_MS = 86400000
 		const staticFacts: string[] = []
 		const dynamicFacts: string[] = []
 
-		for (const mem of allMemories) {
-			const text = mem.memory ?? mem.content ?? ""
-			if (!text) continue
+		// score and sort all memories by weighted formula
+		const scored = allMemories
+			.filter((mem) => mem.memory ?? mem.content)
+			.map((mem) => {
+				const result: SearchResult = {
+					id: mem.id,
+					content: mem.content,
+					memory: mem.memory,
+					similarity: 0.5, // neutral relevance for list results
+					metadata: mem.metadata,
+				}
+				return {
+					text: mem.memory ?? mem.content ?? "",
+					score: scoreMemory(result, now),
+					metadata: mem.metadata,
+				}
+			})
+			.sort((a, b) => b.score - a.score)
 
-			const updatedAt = mem.metadata?.updated_at as string | undefined
-			const createdAt = mem.metadata?.created_at as string | undefined
-			const ts = updatedAt ?? createdAt
-			const age = ts ? now - new Date(ts).getTime() : Infinity
-
-			// recent (last 7 days) = dynamic, older = static
-			if (age < 7 * DAY_MS) {
-				dynamicFacts.push(text)
+		for (const mem of scored) {
+			const ts =
+				(mem.metadata?.updated_at as string) ??
+				(mem.metadata?.created_at as string)
+			const age = ts ? now - new Date(ts).getTime() : Number.POSITIVE_INFINITY
+			// high recency (< 7 days) = dynamic, else static
+			if (Number.isFinite(age) && age < RECENCY_HALF_LIFE_MS) {
+				dynamicFacts.push(mem.text)
 			} else {
-				staticFacts.push(text)
+				staticFacts.push(mem.text)
 			}
 		}
 
@@ -168,9 +248,10 @@ export class Mem0Client {
 
 	async deleteMemory(
 		id: string,
-		_userId?: string,
+		userId?: string,
 	): Promise<{ id: string; forgotten: boolean }> {
-		log.debugRequest("delete", { id })
+		const uid = userId ?? this.userId
+		log.debugRequest("delete", { id, userId: uid })
 		await this.request("DELETE", `/v1/memories/${id}`)
 		log.debugResponse("delete", { id })
 		return { id, forgotten: true }
@@ -201,7 +282,10 @@ export class Mem0Client {
 		const all = await this.listAll(this.userId, 1000)
 		const count = all.length
 
-		await this.request("DELETE", `/v1/memories/?user_id=${encodeURIComponent(this.userId)}`)
+		await this.request(
+			"DELETE",
+			`/v1/memories/?user_id=${encodeURIComponent(this.userId)}`,
+		)
 
 		log.debugResponse("wipe", { deletedCount: count })
 		return { deletedCount: count }
@@ -219,7 +303,14 @@ export class Mem0Client {
 	private async listAll(
 		userId: string,
 		limit: number,
-	): Promise<Array<{ id: string; content: string; memory?: string; metadata?: Record<string, unknown> }>> {
+	): Promise<
+		Array<{
+			id: string
+			content: string
+			memory?: string
+			metadata?: Record<string, unknown>
+		}>
+	> {
 		const response = (await this.request(
 			"GET",
 			`/v1/memories/?user_id=${encodeURIComponent(userId)}&limit=${limit}`,

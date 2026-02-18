@@ -36,10 +36,7 @@ export function registerProfileTool(
 					`profile tool: query="${params.query ?? "(none)"}" userId="${params.userId ?? "default"}"`,
 				)
 
-				const profile = await client.getProfile(
-					params.query,
-					params.userId,
-				)
+				const profile = await client.getProfile(params.query, params.userId)
 
 				if (profile.static.length === 0 && profile.dynamic.length === 0) {
 					return {

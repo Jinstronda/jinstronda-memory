@@ -10,7 +10,16 @@
 		"userId": {
 			"label": "User ID",
 			"placeholder": "openclaw_myhostname",
-			"help": "Memory namespace / user scope. Default: openclaw_{hostname}."
+			"help": "Memory namespace for this agent. Default: openclaw_{hostname}."
+		},
+		"sharedUserId": {
+			"label": "Shared User ID",
+			"placeholder": "jinstronda",
+			"help": "Shared memory namespace readable by all agents. Defaults to userId."
+		},
+		"inheritSharedMemory": {
+			"label": "Inherit Shared Memory",
+			"help": "When true, recall also queries the shared namespace and merges results"
 		},
 		"autoRecall": {
 			"label": "Auto-Recall",
@@ -64,6 +73,8 @@
 		"properties": {
 			"mem0Url": { "type": "string" },
 			"userId": { "type": "string" },
+			"sharedUserId": { "type": "string" },
+			"inheritSharedMemory": { "type": "boolean" },
 			"autoRecall": { "type": "boolean" },
 			"autoCapture": { "type": "boolean" },
 			"maxRecallResults": { "type": "number", "minimum": 1, "maximum": 20 },

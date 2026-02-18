@@ -1,4 +1,4 @@
-import type { ProfileSearchResult, Mem0Client } from "../client.ts"
+import type { Mem0Client, ProfileSearchResult } from "../client.ts"
 import type { Mem0Config } from "../config.ts"
 import { log } from "../logger.ts"
 
@@ -162,10 +162,7 @@ function formatContainerMetadata(
 	return lines.join("\n")
 }
 
-export function buildRecallHandler(
-	client: Mem0Client,
-	cfg: Mem0Config,
-) {
+export function buildRecallHandler(client: Mem0Client, cfg: Mem0Config) {
 	return async (
 		event: Record<string, unknown>,
 		ctx?: Record<string, unknown>,
@@ -181,11 +178,27 @@ export function buildRecallHandler(
 		log.debug(`recalling for turn ${turn} (profile: ${includeProfile})`)
 
 		try {
-			const profile = await client.getProfile(prompt)
+			const namespaces =
+				cfg.inheritSharedMemory && cfg.sharedUserId !== cfg.userId
+					? [cfg.userId, cfg.sharedUserId]
+					: [cfg.userId]
+
+			const [profile, searchResults] = await Promise.all([
+				client.getProfile(prompt),
+				client.searchMultiple(prompt, cfg.maxRecallResults, namespaces),
+			])
+
+			// merge scored cross-namespace results into profile search results
+			const crossNamespaceResults = searchResults.map((r) => ({
+				memory: r.memory ?? r.content,
+				updatedAt: r.metadata?.updated_at as string | undefined,
+				similarity: r.score ?? r.similarity,
+			}))
+
 			const memoryContext = formatContext(
 				includeProfile ? profile.static : [],
 				includeProfile ? profile.dynamic : [],
-				profile.searchResults,
+				crossNamespaceResults,
 				cfg.maxRecallResults,
 			)
 

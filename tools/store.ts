@@ -13,7 +13,7 @@ import {
 export function registerStoreTool(
 	api: OpenClawPluginApi,
 	client: Mem0Client,
-	_cfg: Mem0Config,
+	cfg: Mem0Config,
 	getSessionKey: () => string | undefined,
 ): void {
 	api.registerTool(
@@ -24,34 +24,45 @@ export function registerStoreTool(
 			parameters: Type.Object({
 				text: Type.String({ description: "Information to remember" }),
 				category: Type.Optional(stringEnum(MEMORY_CATEGORIES)),
+				scope: Type.Optional(stringEnum(["own", "shared"] as const)),
 				userId: Type.Optional(
 					Type.String({
 						description:
-							"Optional user ID to store the memory under a specific scope",
+							"Explicit user ID override (takes precedence over scope)",
 					}),
 				),
 			}),
 			async execute(
 				_toolCallId: string,
-				params: { text: string; category?: string; userId?: string },
+				params: {
+					text: string
+					category?: string
+					scope?: "own" | "shared"
+					userId?: string
+				},
 			) {
 				const category = params.category ?? detectCategory(params.text)
 				const sk = getSessionKey()
 				const customId = sk ? buildDocumentId(sk) : undefined
+				const targetUserId =
+					params.userId ??
+					(params.scope === "shared" ? cfg.sharedUserId : undefined)
 
 				log.debug(
-					`store tool: category="${category}" customId="${customId}" userId="${params.userId ?? "default"}"`,
+					`store tool: category="${category}" customId="${customId}" scope="${params.scope ?? "own"}" userId="${targetUserId ?? "default"}"`,
 				)
 
 				await client.addMemory(
 					params.text,
 					{ type: category, source: "openclaw_tool" },
 					customId,
-					params.userId,
+					targetUserId,
 				)
 
 				const preview =
-					params.text.length > 80 ? `${params.text.slice(0, 80)}...` : params.text
+					params.text.length > 80
+						? `${params.text.slice(0, 80)}...`
+						: params.text
 
 				return {
 					content: [{ type: "text" as const, text: `Stored: "${preview}"` }],

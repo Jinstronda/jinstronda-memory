@@ -2,7 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
 import { Mem0Client } from "./client.ts"
 import { registerCli, registerCliSetup } from "./commands/cli.ts"
 import { registerCommands } from "./commands/slash.ts"
-import { parseConfig, mem0ConfigSchema } from "./config.ts"
+import { mem0ConfigSchema, parseConfig } from "./config.ts"
 import { buildCaptureHandler } from "./hooks/capture.ts"
 import { buildRecallHandler } from "./hooks/recall.ts"
 import { initLogger } from "./logger.ts"
@@ -61,10 +61,16 @@ export default {
 					if (res.ok) {
 						api.logger.info("mem0: connected to " + cfg.mem0Url)
 					} else {
-						api.logger.warn("mem0: server returned " + res.status + ", memory may not work")
+						api.logger.warn(
+							"mem0: server returned " + res.status + ", memory may not work",
+						)
 					}
 				} catch {
-					api.logger.warn("mem0: cannot reach " + cfg.mem0Url + ", memory will not work until server is running")
+					api.logger.warn(
+						"mem0: cannot reach " +
+							cfg.mem0Url +
+							", memory will not work until server is running",
+					)
 				}
 			},
 			stop: () => {

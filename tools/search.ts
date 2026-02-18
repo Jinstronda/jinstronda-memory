@@ -1,13 +1,14 @@
 import { Type } from "@sinclair/typebox"
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
-import type { Mem0Client } from "../client.ts"
+import { stringEnum } from "openclaw/plugin-sdk"
+import type { Mem0Client, SearchResult } from "../client.ts"
 import type { Mem0Config } from "../config.ts"
 import { log } from "../logger.ts"
 
 export function registerSearchTool(
 	api: OpenClawPluginApi,
 	client: Mem0Client,
-	_cfg: Mem0Config,
+	cfg: Mem0Config,
 ): void {
 	api.registerTool(
 		{
@@ -20,27 +21,46 @@ export function registerSearchTool(
 				limit: Type.Optional(
 					Type.Number({ description: "Max results (default: 5)" }),
 				),
+				scope: Type.Optional(stringEnum(["own", "shared", "all"] as const)),
 				userId: Type.Optional(
 					Type.String({
 						description:
-							"Optional user ID to search under a specific scope",
+							"Explicit user ID override (takes precedence over scope)",
 					}),
 				),
 			}),
 			async execute(
 				_toolCallId: string,
-				params: { query: string; limit?: number; userId?: string },
+				params: {
+					query: string
+					limit?: number
+					scope?: "own" | "shared" | "all"
+					userId?: string
+				},
 			) {
 				const limit = params.limit ?? 5
+				const scope = params.scope ?? "all"
 				log.debug(
-					`search tool: query="${params.query}" limit=${limit} userId="${params.userId ?? "default"}"`,
+					`search tool: query="${params.query}" limit=${limit} scope="${scope}" userId="${params.userId ?? "default"}"`,
 				)
 
-				const results = await client.search(
-					params.query,
-					limit,
-					params.userId,
-				)
+				let results: SearchResult[]
+				if (params.userId) {
+					results = await client.search(params.query, limit, params.userId)
+				} else if (
+					scope === "all" &&
+					cfg.inheritSharedMemory &&
+					cfg.sharedUserId !== cfg.userId
+				) {
+					results = await client.searchMultiple(params.query, limit, [
+						cfg.userId,
+						cfg.sharedUserId,
+					])
+				} else if (scope === "shared") {
+					results = await client.search(params.query, limit, cfg.sharedUserId)
+				} else {
+					results = await client.search(params.query, limit)
+				}
 
 				if (results.length === 0) {
 					return {

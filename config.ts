@@ -10,6 +10,8 @@ export type CustomContainer = {
 export type Mem0Config = {
 	mem0Url: string
 	userId: string
+	sharedUserId: string
+	inheritSharedMemory: boolean
 	autoRecall: boolean
 	autoCapture: boolean
 	maxRecallResults: number
@@ -24,6 +26,8 @@ export type Mem0Config = {
 const ALLOWED_KEYS = [
 	"mem0Url",
 	"userId",
+	"sharedUserId",
+	"inheritSharedMemory",
 	"autoRecall",
 	"autoCapture",
 	"maxRecallResults",
@@ -84,14 +88,20 @@ export function parseConfig(raw: unknown): Mem0Config {
 		}
 	}
 
+	const userId = cfg.userId
+		? sanitizeTag(cfg.userId as string)
+		: defaultUserId()
+
 	return {
 		mem0Url:
 			typeof cfg.mem0Url === "string" && cfg.mem0Url.length > 0
 				? cfg.mem0Url
 				: "http://localhost:8080",
-		userId: cfg.userId
-			? sanitizeTag(cfg.userId as string)
-			: defaultUserId(),
+		userId,
+		sharedUserId: cfg.sharedUserId
+			? sanitizeTag(cfg.sharedUserId as string)
+			: userId,
+		inheritSharedMemory: (cfg.inheritSharedMemory as boolean) ?? true,
 		autoRecall: (cfg.autoRecall as boolean) ?? true,
 		autoCapture: (cfg.autoCapture as boolean) ?? true,
 		maxRecallResults: (cfg.maxRecallResults as number) ?? 10,
@@ -118,6 +128,8 @@ export const mem0ConfigSchema = {
 		properties: {
 			mem0Url: { type: "string" },
 			userId: { type: "string" },
+			sharedUserId: { type: "string" },
+			inheritSharedMemory: { type: "boolean" },
 			autoRecall: { type: "boolean" },
 			autoCapture: { type: "boolean" },
 			maxRecallResults: { type: "number" },

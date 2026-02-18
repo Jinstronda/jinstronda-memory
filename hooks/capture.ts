@@ -67,14 +67,8 @@ export function buildCaptureHandler(
 				? texts
 						.map((t) =>
 							t
-								.replace(
-									/<mem0-context>[\s\S]*?<\/mem0-context>\s*/g,
-									"",
-								)
-								.replace(
-									/<mem0-containers>[\s\S]*?<\/mem0-containers>\s*/g,
-									"",
-								)
+								.replace(/<mem0-context>[\s\S]*?<\/mem0-context>\s*/g, "")
+								.replace(/<mem0-containers>[\s\S]*?<\/mem0-containers>\s*/g, "")
 								.trim(),
 						)
 						.filter((t) => t.length >= 10)
@@ -86,9 +80,7 @@ export function buildCaptureHandler(
 		const sk = getSessionKey()
 		const customId = sk ? buildDocumentId(sk) : undefined
 
-		log.debug(
-			`capturing ${captured.length} texts (${content.length} chars)`,
-		)
+		log.debug(`capturing ${captured.length} texts (${content.length} chars)`)
 
 		try {
 			await client.addMemory(
