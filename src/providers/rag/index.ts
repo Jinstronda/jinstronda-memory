@@ -84,6 +84,7 @@ export class RAGProvider implements Provider {
   private extractionQueue: Array<() => void> = []
   private containerLock = new ContainerLock()
   private cacheLoading = new Map<string, Promise<boolean>>()
+  private pgStore: any = null
 
   private async acquireExtractionSlot(): Promise<void> {
     if (this.activeGlobalExtractions < MAX_GLOBAL_EXTRACTIONS) {
@@ -203,6 +204,15 @@ export class RAGProvider implements Provider {
       throw new Error("RAG provider requires OPENAI_API_KEY for memory extraction and embeddings")
     }
     this.openai = createOpenAI({ apiKey: this.apiKey })
+
+    const dbUrl = process.env.DATABASE_URL
+    if (dbUrl) {
+      const { PgStore } = await import("./pg")
+      this.pgStore = new PgStore(dbUrl)
+      await this.pgStore.initialize()
+      logger.info("Using PostgreSQL + pgvector backend")
+    }
+
     logger.info("Initialized RAG provider (hybrid search + entity graph + LLM reranker)")
   }
 
@@ -286,14 +296,13 @@ export class RAGProvider implements Provider {
       return { session, parsed, dateStr }
     })
 
-    await this.containerLock.writeLock(options.containerTag)
-    try {
-      for (const { session, parsed, dateStr } of parsedSessions) {
+    if (this.pgStore) {
+      for (const { session, parsed } of parsedSessions) {
         for (const entity of parsed.entities) {
-          graph.addEntity(entity.name, entity.type, entity.summary, session.sessionId)
+          await this.pgStore.addEntity(options.containerTag, entity.name, entity.type, entity.summary, session.sessionId)
         }
         for (const rel of parsed.relationships) {
-          graph.addRelationship({
+          await this.pgStore.addRelationship(options.containerTag, {
             source: rel.source,
             target: rel.target,
             relation: rel.relation,
@@ -303,29 +312,55 @@ export class RAGProvider implements Provider {
         }
         totalEntities += parsed.entities.length
         totalRelationships += parsed.relationships.length
-
-        const dateHeader = `# Memories from ${dateStr}\n\n`
-        const content = dateHeader + parsed.memoriesText
-        const textChunks = chunkText(content)
-
-        for (let i = 0; i < textChunks.length; i++) {
-          allChunks.push({
-            text: textChunks[i],
-            sessionId: session.sessionId,
-            chunkIndex: i,
-            date: dateStr,
-            metadata: {
-              ...session.metadata,
-              memoryDate: dateStr,
-            },
-          })
-        }
       }
-    } finally {
-      this.containerLock.writeUnlock(options.containerTag)
+    } else {
+      await this.containerLock.writeLock(options.containerTag)
+      try {
+        for (const { session, parsed } of parsedSessions) {
+          for (const entity of parsed.entities) {
+            graph.addEntity(entity.name, entity.type, entity.summary, session.sessionId)
+          }
+          for (const rel of parsed.relationships) {
+            graph.addRelationship({
+              source: rel.source,
+              target: rel.target,
+              relation: rel.relation,
+              date: rel.date,
+              sessionId: session.sessionId,
+            })
+          }
+          totalEntities += parsed.entities.length
+          totalRelationships += parsed.relationships.length
+        }
+      } finally {
+        this.containerLock.writeUnlock(options.containerTag)
+      }
     }
 
-    logger.info(`[ingest] ${options.containerTag}: graph built with ${totalEntities} entities, ${totalRelationships} relationships (${graph.nodeCount} unique nodes, ${graph.edgeCount} edges)`)
+    for (const { session, parsed, dateStr } of parsedSessions) {
+      const dateHeader = `# Memories from ${dateStr}\n\n`
+      const content = dateHeader + parsed.memoriesText
+      const textChunks = chunkText(content)
+
+      for (let i = 0; i < textChunks.length; i++) {
+        allChunks.push({
+          text: textChunks[i],
+          sessionId: session.sessionId,
+          chunkIndex: i,
+          date: dateStr,
+          metadata: {
+            ...session.metadata,
+            memoryDate: dateStr,
+          },
+        })
+      }
+    }
+
+    if (this.pgStore) {
+      logger.info(`[ingest] ${options.containerTag}: graph built with ${totalEntities} entities, ${totalRelationships} relationships (pg backend)`)
+    } else {
+      logger.info(`[ingest] ${options.containerTag}: graph built with ${totalEntities} entities, ${totalRelationships} relationships (${graph.nodeCount} unique nodes, ${graph.edgeCount} edges)`)
+    }
 
     if (allChunks.length === 0) {
       return { documentIds: [] }
@@ -370,13 +405,17 @@ export class RAGProvider implements Provider {
       )
     }
 
-    await this.containerLock.writeLock(options.containerTag)
-    try {
-      this.searchEngine.addChunks(options.containerTag, embeddedChunks)
-    } finally {
-      this.containerLock.writeUnlock(options.containerTag)
+    if (this.pgStore) {
+      await this.pgStore.addChunks(options.containerTag, embeddedChunks)
+    } else {
+      await this.containerLock.writeLock(options.containerTag)
+      try {
+        this.searchEngine.addChunks(options.containerTag, embeddedChunks)
+      } finally {
+        this.containerLock.writeUnlock(options.containerTag)
+      }
+      await this.saveToCache(options.containerTag)
     }
-    await this.saveToCache(options.containerTag)
 
     const documentIds = embeddedChunks.map((c) => c.id)
     logger.debug(
@@ -401,11 +440,6 @@ export class RAGProvider implements Provider {
   async search(query: string, options: SearchOptions): Promise<unknown[]> {
     if (!this.openai) throw new Error("Provider not initialized")
 
-    // Load cached index if in-memory is empty
-    if (!this.searchEngine.hasData(options.containerTag)) {
-      await this.loadFromCache(options.containerTag)
-    }
-
     const embeddingModel = this.openai.embedding(EMBEDDING_MODEL)
     let queryEmbedding: number[]
     for (let attempt = 0; ; attempt++) {
@@ -422,27 +456,47 @@ export class RAGProvider implements Provider {
     const limit = options.limit || 10
     const overfetchLimit = Math.max(limit, RERANK_OVERFETCH)
 
-    await this.containerLock.readLock(options.containerTag)
     let hybridResults: SearchResult[]
     let graphResult: GraphSearchResult | null = null
-    try {
-      hybridResults = this.searchEngine.search(options.containerTag, queryEmbedding, query, overfetchLimit)
 
-      const graph = this.graphs.get(options.containerTag)
-      if (graph && graph.nodeCount > 0) {
-        const queryEntities = graph.findEntitiesInQuery(query)
+    if (this.pgStore) {
+      hybridResults = await this.pgStore.search(options.containerTag, queryEmbedding, query, overfetchLimit)
+      const nodeCount = await this.pgStore.getNodeCount(options.containerTag)
+      if (nodeCount > 0) {
+        const queryEntities = await this.pgStore.findEntitiesInQuery(options.containerTag, query)
         if (queryEntities.length > 0) {
-          graphResult = graph.getContext(queryEntities, 2)
-          logger.debug(`Graph: found ${queryEntities.length} entities, added ${graphResult.entities.length} nodes + ${graphResult.relationships.length} edges`)
+          graphResult = await this.pgStore.getContext(options.containerTag, queryEntities, 2)
+          logger.debug(`Graph: found ${queryEntities.length} entities, added ${graphResult!.entities.length} nodes + ${graphResult!.relationships.length} edges`)
         }
       }
-    } finally {
-      this.containerLock.readUnlock(options.containerTag)
+    } else {
+      if (!this.searchEngine.hasData(options.containerTag)) {
+        await this.loadFromCache(options.containerTag)
+      }
+
+      await this.containerLock.readLock(options.containerTag)
+      try {
+        hybridResults = this.searchEngine.search(options.containerTag, queryEmbedding, query, overfetchLimit)
+
+        const graph = this.graphs.get(options.containerTag)
+        if (graph && graph.nodeCount > 0) {
+          const queryEntities = graph.findEntitiesInQuery(query)
+          if (queryEntities.length > 0) {
+            graphResult = graph.getContext(queryEntities, 2)
+            logger.debug(`Graph: found ${queryEntities.length} entities, added ${graphResult.entities.length} nodes + ${graphResult.relationships.length} edges`)
+          }
+        }
+      } finally {
+        this.containerLock.readUnlock(options.containerTag)
+      }
     }
 
-    logger.debug(
-      `Hybrid search: ${hybridResults.length} results for "${query.substring(0, 50)}..." (${this.searchEngine.getChunkCount(options.containerTag)} total chunks)`
-    )
+    if (this.pgStore) {
+      const chunkCount = await this.pgStore.getChunkCount(options.containerTag)
+      logger.debug(`Hybrid search: ${hybridResults.length} results for "${query.substring(0, 50)}..." (${chunkCount} total chunks, pg)`)
+    } else {
+      logger.debug(`Hybrid search: ${hybridResults.length} results for "${query.substring(0, 50)}..." (${this.searchEngine.getChunkCount(options.containerTag)} total chunks)`)
+    }
 
     let finalChunks = hybridResults
     if (hybridResults.length > limit) {
@@ -487,13 +541,17 @@ export class RAGProvider implements Provider {
   }
 
   async clear(containerTag: string): Promise<void> {
-    await this.containerLock.writeLock(containerTag)
-    try {
-      this.searchEngine.clear(containerTag)
-      this.graphs.get(containerTag)?.clear()
-      this.graphs.delete(containerTag)
-    } finally {
-      this.containerLock.writeUnlock(containerTag)
+    if (this.pgStore) {
+      await this.pgStore.clear(containerTag)
+    } else {
+      await this.containerLock.writeLock(containerTag)
+      try {
+        this.searchEngine.clear(containerTag)
+        this.graphs.get(containerTag)?.clear()
+        this.graphs.delete(containerTag)
+      } finally {
+        this.containerLock.writeUnlock(containerTag)
+      }
     }
     logger.info(`Cleared RAG data for: ${containerTag}`)
   }

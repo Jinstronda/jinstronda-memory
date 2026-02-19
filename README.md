@@ -66,6 +66,9 @@ ZEP_API_KEY=
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 GOOGLE_API_KEY=
+
+# PostgreSQL + pgvector (optional, for production)
+DATABASE_URL=postgresql://user:pass@localhost:5432/memorybench
 ```
 
 ## Commands
@@ -127,6 +130,8 @@ The interesting part. We wrote a fully open-source RAG pipeline that gets within
 6. **Answer**: GPT-5 with chain-of-thought reasoning and explicit date arithmetic
 
 The search index persists to disk, so you can re-search and re-answer without re-ingesting. That saves hours on iterative prompt tuning.
+
+For production, set `DATABASE_URL` to use PostgreSQL + pgvector instead of the in-memory engine. This gives you HNSW-indexed vector search, native full-text search, and concurrent-safe storage that scales beyond what fits in memory.
 
 ## Extending
 
