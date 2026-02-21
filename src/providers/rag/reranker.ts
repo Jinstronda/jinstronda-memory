@@ -3,7 +3,7 @@ import { generateText } from "ai"
 import type { SearchResult } from "./search"
 import { logger } from "../../utils/logger"
 
-const RERANKER_MODEL = "gpt-5-mini"
+const RERANKER_MODEL = "gpt-5-nano"
 
 interface RerankScore {
   index: number

@@ -1,74 +1,116 @@
 # MemoryBench
 
-Most AI memory systems are black boxes. You send conversations in, you get answers out, and you have no idea if the system actually remembers what matters. We built MemoryBench because we needed to know.
+Every AI memory product tells you the same story: "We store your conversations and retrieve them when needed." They're all lying by omission. They store summaries. Extracted facts. Compressed representations. The original context, the thing that actually matters, gets thrown away.
+
+This is the fundamental mistake. When you told your AI assistant "I tried both dark roast and light roast last week, and honestly the dark roast was so much better," mem0 stores `User prefers dark roast coffee`. The comparison is gone. The timing is gone. The conviction is gone. You've lost the signal and kept the label.
+
+We built MemoryBench to prove this matters, and to build something better.
 
 <img width="3584" height="2154" alt="original" src="https://github.com/user-attachments/assets/7fe49b7e-ed0b-4861-92a5-fa5d199cfc72" />
 
-The idea is simple: take any memory provider (Supermemory, Mem0, Zep, or your own RAG pipeline), throw 500 questions at it across 115k+ tokens of conversation history, and see what sticks. Every question has a ground truth answer. An LLM judge scores each response. You get a number.
+## The Numbers
 
-That number matters more than any demo.
+500 questions. 115k+ tokens of conversation history. Six question types designed to break memory systems: factual recall, preference understanding, temporal reasoning, knowledge updates, multi-session synthesis, and assistant recall. An LLM judge with ground truth answers. No vibes. Just a score.
 
-## Results
+| Provider | Accuracy | Notes |
+|----------|----------|-------|
+| Supermemory | 85.9% | Proprietary API |
+| **RAG v1.7 (ours)** | **82.8%** | Open source, runs locally |
+| mem0 | 72.1% | Cloud API |
+| OpenClaw QMD | 58.3% | |
+| Filesystem | 54.2% | Naive baseline |
 
-We built an open-source RAG provider alongside the framework to prove you don't need a proprietary memory API to get good recall. Here's where things stand on LongMemEval:
+### Per-Category Breakdown (v1.7)
 
-| Provider | Accuracy |
-|----------|----------|
-| Supermemory | 85.9% |
-| **RAG Provider (ours)** | **82.8%** |
-| OpenClaw QMD | 58.3% |
-| Filesystem | 54.2% |
+| Question Type | Accuracy | What It Tests |
+|---|---|---|
+| Single-session user facts | 97.1% | "How many bass did I catch?" |
+| Single-session assistant recall | 94.6% | "What recipe did you suggest?" |
+| Knowledge updates | 83.3% | "Where do I work now?" (changed jobs) |
+| Multi-session synthesis | 78.2% | Connecting info across conversations |
+| Temporal reasoning | 69.2% | "When did I start running?" |
+| Preferences | 63.3% | "What's my favorite coffee?" |
 
-That's 89% of the gap closed between a naive filesystem approach and Supermemory's proprietary system, using nothing but open-source components: GPT-5 for answering, GPT-5-mini for extraction and reranking, and text-embedding-3-small for embeddings.
+The retrieval quality is 97.2% Hit@K with 0.912 MRR. The right information is almost always found. The remaining errors are reasoning failures, not retrieval failures. That's a fundamentally different problem to solve.
 
-Full per-category breakdown in [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md).
+## Why This Exists
 
-## How it works
+The memory market is full of products competing on the same dimension: better embeddings, better chunking, better summarization. They're all playing the same game. The game is wrong.
+
+The real question isn't "how do we store memories more efficiently?" It's "how do we preserve the context that makes memories useful?"
+
+When I extract atomic facts from a conversation, I get perfect keyword matches. When I keep the full conversation chunk alongside those facts, I get understanding. The difference shows up in preference questions (63% vs 90% in early versions) because preferences require nuance that single-line facts can't capture.
+
+v1.7 does both. Facts for precision matching, parent chunks for context. The fact finds the needle; the chunk gives you the haystack around it.
+
+## The Architecture
 
 ```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│  Benchmarks │    │  Providers  │    │   Judges    │
-│  (LoCoMo,   │    │ (Supermem,  │    │  (GPT-4o,   │
-│  LongMem..) │    │  Mem0, Zep) │    │  Claude..)  │
-└──────┬──────┘    └──────┬──────┘    └──────┬──────┘
-       └──────────────────┼──────────────────┘
-                          ▼
-              ┌───────────────────────┐
-              │      MemoryBench      │
-              └───────────┬───────────┘
-                          ▼
-   ┌────────┬─────────┬────────┬──────────┬────────┐
-   │ Ingest │ Indexing│ Search │  Answer  │Evaluate│
-   └────────┴─────────┴────────┴──────────┴────────┘
+Query → Rewrite (gpt-5-nano) → Embed (text-embedding-3-large)
+                                        ↓
+                    ┌───────────────────────────────────────┐
+                    │         Parallel Search               │
+                    │  BM25 keywords + Vector similarity    │
+                    │  Atomic fact matching                 │
+                    │  Entity graph (2-hop BFS)             │
+                    └───────────────────┬───────────────────┘
+                                        ↓
+                    Fact → Parent Chunk Injection
+                                        ↓
+                    Session Boost (+0.1 for fact-matched sessions)
+                                        ↓
+                    LLM Rerank (gpt-5-nano, query-type aware)
+                                        ↓
+                    Entity + Relationship context
+                                        ↓
+                    User Profile injection
+                                        ↓
+                    Answer (GPT-5, reasoning)
 ```
 
-You pick a benchmark, a provider, and a judge. The framework handles everything else: ingesting conversation sessions, waiting for indexing, searching for relevant context, generating answers, and evaluating them against ground truth.
+Six retrieval signals fused together:
+1. **BM25** (0.3 weight): exact keyword matching for names, dates, specific terms
+2. **Vector similarity** (0.7 weight): semantic matching for paraphrased queries
+3. **Atomic facts**: line-level precision matching with parent chunk retrieval
+4. **Entity graph**: 2-hop BFS traversal for multi-hop relationship questions
+5. **User profile**: persistent biographical facts always injected
+6. **LLM reranker**: query-type-aware scoring (temporal, preference, factual, multi-hop)
 
-Every phase checkpoints independently, so when something fails at question 347 you don't start over from scratch.
+Everything runs locally. The only external calls are to OpenAI for embeddings and LLM inference. No memory API subscriptions. No data leaving your machine except to the model provider.
 
 ## Quick Start
 
 ```bash
 bun install
-cp .env.example .env.local  # Add your API keys
-bun run src/index.ts run -p supermemory -b locomo
+cp .env.example .env.local  # Add OPENAI_API_KEY
+bun run src/index.ts run -p rag -b longmemeval -j gpt-4o -r my-run
 ```
+
+## MCP Server (Claude Code Integration)
+
+The RAG system ships as an MCP server. Claude Code gets long-term memory across sessions with per-repo isolation.
+
+```bash
+# Start the RAG server
+bun run src/rag-server.ts
+
+# MCP server registers as rag-memory in Claude Code settings
+# Tools: memory_search, memory_store, memory_use_repo, memory_profile, memory_list_repos
+```
+
+Two memory layers:
+- **Personal** (`jinstronda`): user bio, preferences, opinions, relationships. Always searched.
+- **Per-repo** (`repo-<name>`): project-specific decisions, architecture, debugging findings. Isolated per project.
+
+Search queries both. Every session starts by loading context. Breakthroughs get stored automatically. Context survives compaction.
 
 ## Configuration
 
 ```bash
-# Providers (at least one)
-SUPERMEMORY_API_KEY=
-MEM0_API_KEY=
-ZEP_API_KEY=
-
-# Judges (at least one)
-OPENAI_API_KEY=
-ANTHROPIC_API_KEY=
-GOOGLE_API_KEY=
-
-# PostgreSQL + pgvector (optional, for production)
-DATABASE_URL=postgresql://user:pass@localhost:5432/memorybench
+OPENAI_API_KEY=           # Required (embeddings + LLM)
+DATABASE_URL=             # Optional (PostgreSQL + pgvector for production)
+RAG_PORT=3847             # Optional (server port)
+RAG_CACHE_DIR=            # Optional (defaults to ./data/cache/rag)
 ```
 
 ## Commands
@@ -77,70 +119,17 @@ DATABASE_URL=postgresql://user:pass@localhost:5432/memorybench
 |---------|-------------|
 | `run` | Full pipeline: ingest, index, search, answer, evaluate, report |
 | `compare` | Run the same benchmark across multiple providers side by side |
-| `ingest` | Ingest benchmark data into a provider |
-| `search` | Run search phase only |
 | `test` | Test a single question |
-| `status` | Check run progress |
-| `list-questions` | Browse benchmark questions |
 | `show-failures` | Debug failed questions |
 | `serve` | Start the web UI |
-| `help` | Show help (`help providers`, `help models`, `help benchmarks`) |
 
-## Options
+## What's Next
 
-```
--p, --provider         Memory provider (supermemory, mem0, zep, rag)
--b, --benchmark        Benchmark (locomo, longmemeval, convomem)
--j, --judge            Judge model (gpt-4o, sonnet-4, gemini-2.5-flash, etc.)
--r, --run-id           Run identifier (auto-generated if omitted)
--m, --answering-model  Model for answer generation (default: gpt-4o)
--l, --limit            Limit number of questions
--q, --question-id      Specific question (for test command)
---force                Clear checkpoint and restart
-```
+Preferences at 63.3% is the gap. The atomic facts decomposition strips conversational nuance that preference questions need. The parent chunk injection in v1.7 partially addresses this, but the real fix is teaching the reranker to weight preference-bearing content higher and preserving comparative language in fact extraction.
 
-## Examples
+Temporal reasoning at 69.2% improved after wiring question dates into the answer prompt (they were silently missing in v1.6). Full evaluation of the date fix is pending.
 
-```bash
-# Full run
-bun run src/index.ts run -p mem0 -b locomo
-
-# Resume an existing run
-bun run src/index.ts run -r my-test
-
-# Compare providers head to head
-bun run src/index.ts compare -p supermemory,mem0,zep -b locomo -s 5
-
-# Different models for answering and judging
-bun run src/index.ts run -p zep -b longmemeval -j sonnet-4 -m gemini-2.5-flash
-
-# Debug failures
-bun run src/index.ts show-failures -r my-test
-```
-
-## The RAG Provider
-
-The interesting part. We wrote a fully open-source RAG pipeline that gets within 3 points of Supermemory:
-
-1. **Extract**: GPT-5-mini pulls structured memories, entities, and relationships from each conversation
-2. **Chunk + Embed**: Memories get chunked (1600 chars, 320 overlap) and embedded with text-embedding-3-small
-3. **Hybrid Search**: BM25 keyword matching + vector cosine similarity, fused at 0.7/0.3 weighting
-4. **Rerank**: GPT-5-mini reranks the top 40 candidates down to 20
-5. **Knowledge Graph**: Entity graph provides multi-hop relationship context
-6. **Answer**: GPT-5 with chain-of-thought reasoning and explicit date arithmetic
-
-The search index persists to disk, so you can re-search and re-answer without re-ingesting. That saves hours on iterative prompt tuning.
-
-For production, set `DATABASE_URL` to use PostgreSQL + pgvector instead of the in-memory engine. This gives you HNSW-indexed vector search, native full-text search, and concurrent-safe storage that scales beyond what fits in memory.
-
-## Extending
-
-| Component | Guide |
-|-----------|-------|
-| Add Provider | [src/providers/README.md](src/providers/README.md) |
-| Add Benchmark | [src/benchmarks/README.md](src/benchmarks/README.md) |
-| Add Judge | [src/judges/README.md](src/judges/README.md) |
-| Project Structure | [src/README.md](src/README.md) |
+The ceiling for this architecture is probably 88-90%. Getting past Supermemory's 85.9% requires solving the preference and temporal problems. The retrieval is already there. The reasoning isn't.
 
 ## License
 

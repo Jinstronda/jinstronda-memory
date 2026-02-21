@@ -20,6 +20,11 @@ import { isCountingQuery, decomposeQuery } from "./decompose"
 import { EntityGraph } from "./graph"
 import type { SerializedGraph, GraphSearchResult } from "./graph"
 import { ContainerLock } from "./lock"
+import { InMemoryFactStore } from "./facts"
+import type { AtomicFact, FactSearchResult } from "./facts"
+import { rewriteQuery } from "./rewrite"
+import { buildProfile, formatProfileContext } from "./profile"
+import type { UserProfile } from "./profile"
 
 const CHUNK_SIZE = 1600
 const CHUNK_OVERLAP = 320
@@ -28,6 +33,8 @@ const EMBEDDING_MODEL = "text-embedding-3-large"
 const RERANK_OVERFETCH = 40
 const EXTRACTION_CONCURRENCY = 10
 const MAX_GLOBAL_EXTRACTIONS = 300
+const FACT_SEARCH_LIMIT = 30
+const FACT_SESSION_BOOST = 0.1
 const CACHE_DIR = "./data/cache/rag"
 
 function chunkText(text: string, chunkSize: number = CHUNK_SIZE, overlap: number = CHUNK_OVERLAP): string[] {
@@ -85,6 +92,8 @@ export class RAGProvider implements Provider {
   private extractionQueue: Array<() => void> = []
   private containerLock = new ContainerLock()
   private cacheLoading = new Map<string, Promise<boolean>>()
+  private factStore = new InMemoryFactStore()
+  private profiles = new Map<string, UserProfile>()
   private pgStore: any = null
 
   private async acquireExtractionSlot(): Promise<void> {
@@ -124,9 +133,12 @@ export class RAGProvider implements Provider {
     await this.containerLock.readLock(containerTag)
     let searchJson: string | null = null
     let graphJson: string | null = null
+    let factsJson: string | null = null
+    let profileJson: string | null = null
     let searchCount = 0
     let graphNodeCount = 0
     let graphEdgeCount = 0
+    let factCount = 0
     try {
       const searchData = this.searchEngine.save(containerTag)
       if (searchData) {
@@ -140,18 +152,37 @@ export class RAGProvider implements Provider {
         graphNodeCount = graphData.nodes.length
         graphEdgeCount = graphData.edges.length
       }
+      const factsData = this.factStore.save(containerTag)
+      if (factsData) {
+        factsJson = JSON.stringify(factsData)
+        factCount = factsData.facts.length
+      }
+      const profile = this.profiles.get(containerTag)
+      if (profile && profile.facts.length > 0) {
+        profileJson = JSON.stringify(profile)
+      }
     } finally {
       this.containerLock.readUnlock(containerTag)
     }
 
+    const writes: Promise<void>[] = []
     if (searchJson) {
-      await writeFile(`${dir}/search.json`, searchJson)
+      writes.push(writeFile(`${dir}/search.json`, searchJson))
       logger.info(`[cache] Saved search index for ${containerTag} (${searchCount} chunks)`)
     }
     if (graphJson) {
-      await writeFile(`${dir}/graph.json`, graphJson)
+      writes.push(writeFile(`${dir}/graph.json`, graphJson))
       logger.info(`[cache] Saved entity graph for ${containerTag} (${graphNodeCount} nodes, ${graphEdgeCount} edges)`)
     }
+    if (factsJson) {
+      writes.push(writeFile(`${dir}/facts.json`, factsJson))
+      logger.info(`[cache] Saved ${factCount} atomic facts for ${containerTag}`)
+    }
+    if (profileJson) {
+      writes.push(writeFile(`${dir}/profile.json`, profileJson))
+      logger.info(`[cache] Saved user profile for ${containerTag}`)
+    }
+    await Promise.all(writes)
   }
 
   private loadFromCache(containerTag: string): Promise<boolean> {
@@ -173,11 +204,15 @@ export class RAGProvider implements Provider {
       const raw = await readFile(searchPath, "utf8")
       const searchData = JSON.parse(raw)
 
-      let graphData: SerializedGraph | null = null
-      const graphPath = `${dir}/graph.json`
-      try {
-        graphData = JSON.parse(await readFile(graphPath, "utf8")) as SerializedGraph
-      } catch {}
+      const [graphRaw, factsRaw, profileRaw] = await Promise.all([
+        readFile(`${dir}/graph.json`, "utf8").catch(() => null),
+        readFile(`${dir}/facts.json`, "utf8").catch(() => null),
+        readFile(`${dir}/profile.json`, "utf8").catch(() => null),
+      ])
+
+      const graphData = graphRaw ? JSON.parse(graphRaw) as SerializedGraph : null
+      const factsData = factsRaw ? JSON.parse(factsRaw) as { facts: AtomicFact[] } : null
+      const profileData = profileRaw ? JSON.parse(profileRaw) as UserProfile : null
 
       await this.containerLock.writeLock(containerTag)
       try {
@@ -186,11 +221,18 @@ export class RAGProvider implements Provider {
           const graph = this.getGraph(containerTag)
           graph.load(graphData)
         }
+        if (factsData) {
+          this.factStore.load(containerTag, factsData)
+        }
+        if (profileData) {
+          this.profiles.set(containerTag, profileData)
+        }
       } finally {
         this.containerLock.writeUnlock(containerTag)
       }
 
-      logger.info(`[cache] Loaded index for ${containerTag} (${this.searchEngine.getChunkCount(containerTag)} chunks)`)
+      const factCount = this.factStore.getFactCount(containerTag)
+      logger.info(`[cache] Loaded index for ${containerTag} (${this.searchEngine.getChunkCount(containerTag)} chunks, ${factCount} facts)`)
       return true
     } catch (e: any) {
       if (e?.code === "ENOENT") return false
@@ -339,6 +381,8 @@ export class RAGProvider implements Provider {
       }
     }
 
+    // Single pass: extract chunks + atomic facts from parsed sessions
+    const rawFacts: Array<{ text: string; sessionId: string; date: string; eventDate?: string; factIndex: number }> = []
     for (const { session, parsed, dateStr } of parsedSessions) {
       const dateHeader = `# Memories from ${dateStr}\n\n`
       const content = dateHeader + parsed.memoriesText
@@ -362,6 +406,18 @@ export class RAGProvider implements Provider {
           },
         })
       }
+
+      const lines = parsed.memoriesText.split("\n").map((l) => l.trim()).filter((l) => l.length > 5)
+      for (let i = 0; i < lines.length; i++) {
+        const dateMatch = lines[i].match(/^\[(\d{4}-\d{2}-\d{2})\]/)
+        rawFacts.push({
+          text: lines[i],
+          sessionId: session.sessionId,
+          date: dateStr,
+          eventDate: dateMatch ? dateMatch[1] : undefined,
+          factIndex: i,
+        })
+      }
     }
 
     if (this.pgStore) {
@@ -374,61 +430,121 @@ export class RAGProvider implements Provider {
       return { documentIds: [] }
     }
 
-    // Generate embeddings in batches
-    const embeddedChunks: Chunk[] = []
     const embeddingModel = this.openai.embedding(EMBEDDING_MODEL)
 
-    for (let i = 0; i < allChunks.length; i += EMBEDDING_BATCH_SIZE) {
-      const batch = allChunks.slice(i, i + EMBEDDING_BATCH_SIZE)
-      const texts = batch.map((c) => c.text)
-
-      let embeddings: number[][]
+    const embedBatch = async (texts: string[]): Promise<number[][]> => {
       for (let attempt = 0; ; attempt++) {
         try {
           const result = await embedMany({ model: embeddingModel, values: texts })
-          embeddings = result.embeddings
-          break
+          return result.embeddings
         } catch (e) {
           if (attempt >= 2) throw e
           await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
         }
       }
-
-      for (let j = 0; j < batch.length; j++) {
-        const chunk = batch[j]
-        const id = `${options.containerTag}_${chunk.sessionId}_${chunk.chunkIndex}`
-        embeddedChunks.push({
-          id,
-          content: chunk.text,
-          sessionId: chunk.sessionId,
-          chunkIndex: chunk.chunkIndex,
-          embedding: embeddings[j],
-          date: chunk.date,
-          eventDate: chunk.eventDate,
-          metadata: chunk.metadata,
-        })
-      }
-
-      logger.debug(
-        `Embedded batch ${Math.floor(i / EMBEDDING_BATCH_SIZE) + 1}/${Math.ceil(allChunks.length / EMBEDDING_BATCH_SIZE)} (${batch.length} chunks)`
-      )
+      throw new Error("unreachable")
     }
 
-    if (this.pgStore) {
-      await this.pgStore.addChunks(options.containerTag, embeddedChunks)
-    } else {
-      await this.containerLock.writeLock(options.containerTag)
-      try {
-        this.searchEngine.addChunks(options.containerTag, embeddedChunks)
-      } finally {
-        this.containerLock.writeUnlock(options.containerTag)
+    // Run chunk embedding, fact embedding, and profile building in parallel
+    const embedAndStoreChunks = async (): Promise<Chunk[]> => {
+      const embedded: Chunk[] = []
+      for (let i = 0; i < allChunks.length; i += EMBEDDING_BATCH_SIZE) {
+        const batch = allChunks.slice(i, i + EMBEDDING_BATCH_SIZE)
+        const embeddings = await embedBatch(batch.map((c) => c.text))
+
+        for (let j = 0; j < batch.length; j++) {
+          const chunk = batch[j]
+          embedded.push({
+            id: `${options.containerTag}_${chunk.sessionId}_${chunk.chunkIndex}`,
+            content: chunk.text,
+            sessionId: chunk.sessionId,
+            chunkIndex: chunk.chunkIndex,
+            embedding: embeddings[j],
+            date: chunk.date,
+            eventDate: chunk.eventDate,
+            metadata: chunk.metadata,
+          })
+        }
+
+        logger.debug(`Embedded chunk batch ${Math.floor(i / EMBEDDING_BATCH_SIZE) + 1}/${Math.ceil(allChunks.length / EMBEDDING_BATCH_SIZE)} (${batch.length} chunks)`)
       }
+
+      if (this.pgStore) {
+        await this.pgStore.addChunks(options.containerTag, embedded)
+      } else {
+        await this.containerLock.writeLock(options.containerTag)
+        try {
+          this.searchEngine.addChunks(options.containerTag, embedded)
+        } finally {
+          this.containerLock.writeUnlock(options.containerTag)
+        }
+      }
+
+      return embedded
+    }
+
+    const embedAndStoreFacts = async (): Promise<AtomicFact[]> => {
+      if (rawFacts.length === 0) return []
+
+      const embedded: AtomicFact[] = []
+      for (let i = 0; i < rawFacts.length; i += EMBEDDING_BATCH_SIZE) {
+        const batch = rawFacts.slice(i, i + EMBEDDING_BATCH_SIZE)
+        const embeddings = await embedBatch(batch.map((f) => f.text))
+
+        for (let j = 0; j < batch.length; j++) {
+          const fact = batch[j]
+          embedded.push({
+            id: `${options.containerTag}_${fact.sessionId}_fact_${fact.factIndex}`,
+            content: fact.text,
+            sessionId: fact.sessionId,
+            date: fact.date,
+            eventDate: fact.eventDate,
+            factIndex: fact.factIndex,
+            embedding: embeddings[j],
+          })
+        }
+
+        logger.debug(`Embedded fact batch ${Math.floor(i / EMBEDDING_BATCH_SIZE) + 1}/${Math.ceil(rawFacts.length / EMBEDDING_BATCH_SIZE)} (${batch.length} facts)`)
+      }
+
+      if (this.pgStore) {
+        await this.pgStore.addFacts(options.containerTag, embedded)
+      } else {
+        await this.containerLock.writeLock(options.containerTag)
+        try {
+          this.factStore.addFacts(options.containerTag, embedded)
+        } finally {
+          this.containerLock.writeUnlock(options.containerTag)
+        }
+      }
+
+      logger.info(`[ingest] ${options.containerTag}: stored ${embedded.length} atomic facts`)
+      return embedded
+    }
+
+    const buildProfileAsync = async (): Promise<void> => {
+      const allMemoriesText = parsedSessions.map((s) => s.parsed.memoriesText).join("\n\n")
+      const existingProfile = this.profiles.get(options.containerTag)
+      const profile = await buildProfile(this.openai!, allMemoriesText, existingProfile)
+      if (profile.facts.length > 0) {
+        this.profiles.set(options.containerTag, profile)
+        logger.info(`[ingest] ${options.containerTag}: user profile with ${profile.facts.length} facts`)
+      }
+    }
+
+    const [embeddedChunks, embeddedFacts] = await Promise.all([
+      embedAndStoreChunks(),
+      embedAndStoreFacts(),
+      buildProfileAsync(),
+    ])
+
+    if (!this.pgStore) {
       await this.saveToCache(options.containerTag)
     }
 
     const documentIds = embeddedChunks.map((c) => c.id)
     logger.debug(
-      `Ingested ${sessions.length} session(s) as ${embeddedChunks.length} chunks for ${options.containerTag}`
+      `Ingested ${sessions.length} session(s) as ${embeddedChunks.length} chunks + ${embeddedFacts.length} facts for ${options.containerTag}`
     )
 
     return { documentIds }
@@ -449,11 +565,14 @@ export class RAGProvider implements Provider {
   async search(query: string, options: SearchOptions): Promise<unknown[]> {
     if (!this.openai) throw new Error("Provider not initialized")
 
+    // Rewrite query for better retrieval
+    const rewrittenQuery = await rewriteQuery(this.openai, query)
+
     const embeddingModel = this.openai.embedding(EMBEDDING_MODEL)
     let queryEmbedding: number[]
     for (let attempt = 0; ; attempt++) {
       try {
-        const result = await embed({ model: embeddingModel, value: query })
+        const result = await embed({ model: embeddingModel, value: rewrittenQuery })
         queryEmbedding = result.embedding
         break
       } catch (e) {
@@ -467,16 +586,28 @@ export class RAGProvider implements Provider {
 
     let hybridResults: SearchResult[]
     let graphResult: GraphSearchResult | null = null
+    const factMatchedSessions = new Set<string>()
+    let factResults: FactSearchResult[] = []
 
     if (this.pgStore) {
-      hybridResults = await this.pgStore.search(options.containerTag, queryEmbedding, query, overfetchLimit)
-      const nodeCount = await this.pgStore.getNodeCount(options.containerTag)
-      if (nodeCount > 0) {
-        const queryEntities = await this.pgStore.findEntitiesInQuery(options.containerTag, query)
-        if (queryEntities.length > 0) {
-          graphResult = await this.pgStore.getContext(options.containerTag, queryEntities, 2)
-          logger.debug(`Graph: found ${queryEntities.length} entities, added ${graphResult!.entities.length} nodes + ${graphResult!.relationships.length} edges`)
-        }
+      const graphEntityPromise = this.pgStore.findEntitiesInQuery(options.containerTag, query)
+
+      const [fr, searchResults, queryEntities] = await Promise.all([
+        this.pgStore.searchFacts(options.containerTag, queryEmbedding, FACT_SEARCH_LIMIT),
+        this.pgStore.search(options.containerTag, queryEmbedding, rewrittenQuery, overfetchLimit),
+        graphEntityPromise,
+      ])
+
+      factResults = fr
+      hybridResults = searchResults
+      for (const f of factResults) factMatchedSessions.add(f.sessionId)
+      if (factResults.length > 0) {
+        logger.debug(`[facts] Found ${factResults.length} matching facts from ${factMatchedSessions.size} sessions (pg)`)
+      }
+
+      if (queryEntities.length > 0) {
+        graphResult = await this.pgStore.getContext(options.containerTag, queryEntities, 2)
+        logger.debug(`Graph: found ${queryEntities.length} entities, added ${graphResult!.entities.length} nodes + ${graphResult!.relationships.length} edges`)
       }
     } else {
       if (!this.searchEngine.hasData(options.containerTag)) {
@@ -485,7 +616,13 @@ export class RAGProvider implements Provider {
 
       await this.containerLock.readLock(options.containerTag)
       try {
-        hybridResults = this.searchEngine.search(options.containerTag, queryEmbedding, query, overfetchLimit)
+        factResults = this.factStore.search(options.containerTag, queryEmbedding, FACT_SEARCH_LIMIT)
+        for (const f of factResults) factMatchedSessions.add(f.sessionId)
+        if (factResults.length > 0) {
+          logger.debug(`[facts] Found ${factResults.length} matching facts from ${factMatchedSessions.size} sessions`)
+        }
+
+        hybridResults = this.searchEngine.search(options.containerTag, queryEmbedding, rewrittenQuery, overfetchLimit)
 
         const graph = this.graphs.get(options.containerTag)
         if (graph && graph.nodeCount > 0) {
@@ -500,32 +637,82 @@ export class RAGProvider implements Provider {
       }
     }
 
-    if (this.pgStore) {
-      const chunkCount = await this.pgStore.getChunkCount(options.containerTag)
-      logger.debug(`Hybrid search: ${hybridResults.length} results for "${query.substring(0, 50)}..." (${chunkCount} total chunks, pg)`)
-    } else {
-      logger.debug(`Hybrid search: ${hybridResults.length} results for "${query.substring(0, 50)}..." (${this.searchEngine.getChunkCount(options.containerTag)} total chunks)`)
+    // Boost chunks from fact-matched sessions
+    if (factMatchedSessions.size > 0) {
+      for (const r of hybridResults) {
+        if (factMatchedSessions.has(r.sessionId)) {
+          r.score += FACT_SESSION_BOOST
+        }
+      }
+      hybridResults.sort((a, b) => b.score - a.score)
     }
+
+    // Include parent chunks for top matched facts
+    if (factResults.length > 0) {
+      const existingKeys = new Set(hybridResults.map(r => `${r.sessionId}_${r.chunkIndex}`))
+      const topFacts = factResults.slice(0, 10)
+      const uniqueSessions = [...new Set(topFacts.map(f => f.sessionId))]
+
+      const sessionChunksMap = new Map<string, Array<{ content: string; sessionId: string; chunkIndex: number; date?: string; eventDate?: string; metadata?: Record<string, unknown> }>>()
+      if (this.pgStore) {
+        const results = await Promise.all(uniqueSessions.map(sid => this.pgStore!.getChunksBySession(options.containerTag, sid)))
+        for (let i = 0; i < uniqueSessions.length; i++) sessionChunksMap.set(uniqueSessions[i], results[i])
+      } else {
+        for (const sid of uniqueSessions) sessionChunksMap.set(sid, this.searchEngine.getChunksBySession(options.containerTag, sid))
+      }
+
+      let injected = 0
+      for (const fact of topFacts) {
+        const chunks = sessionChunksMap.get(fact.sessionId) || []
+        for (const chunk of chunks) {
+          if (!chunk.content.includes(fact.content)) continue
+          const key = `${chunk.sessionId}_${chunk.chunkIndex}`
+          if (existingKeys.has(key)) continue
+          existingKeys.add(key)
+          hybridResults.push({
+            content: chunk.content,
+            score: fact.score,
+            vectorScore: 0,
+            bm25Score: 0,
+            sessionId: chunk.sessionId,
+            chunkIndex: chunk.chunkIndex,
+            date: chunk.date,
+            eventDate: chunk.eventDate,
+            metadata: chunk.metadata,
+          })
+          injected++
+        }
+      }
+
+      if (injected > 0) {
+        hybridResults.sort((a, b) => b.score - a.score)
+        logger.debug(`[facts] Injected ${injected} parent chunks for matched facts`)
+      }
+    }
+
+    logger.debug(`Hybrid search: ${hybridResults.length} results for "${query.substring(0, 50)}..."`)
 
     if (isCountingQuery(query)) {
       const subQueries = await decomposeQuery(this.openai!, query)
       const existingKeys = new Set(hybridResults.map(r => `${r.sessionId}_${r.chunkIndex}`))
 
-      for (const subQuery of subQueries.slice(1)) {
-        const subEmbed = await embed({ model: embeddingModel, value: subQuery })
-        let subResults: SearchResult[]
-
-        if (this.pgStore) {
-          subResults = await this.pgStore.search(options.containerTag, subEmbed.embedding, subQuery, overfetchLimit)
-        } else {
+      // Parallel: embed + search all sub-queries concurrently
+      const subResultsArrays = await Promise.all(
+        subQueries.slice(1).map(async (subQuery) => {
+          const subEmbed = await embed({ model: embeddingModel, value: subQuery })
+          if (this.pgStore) {
+            return this.pgStore.search(options.containerTag, subEmbed.embedding, subQuery, overfetchLimit)
+          }
           await this.containerLock.readLock(options.containerTag)
           try {
-            subResults = this.searchEngine.search(options.containerTag, subEmbed.embedding, subQuery, overfetchLimit)
+            return this.searchEngine.search(options.containerTag, subEmbed.embedding, subQuery, overfetchLimit)
           } finally {
             this.containerLock.readUnlock(options.containerTag)
           }
-        }
+        })
+      )
 
+      for (const subResults of subResultsArrays) {
         for (const r of subResults) {
           const key = `${r.sessionId}_${r.chunkIndex}`
           if (!existingKeys.has(key)) {
@@ -578,6 +765,20 @@ export class RAGProvider implements Provider {
       }
     }
 
+    // Inject user profile as always-present context
+    const profile = this.profiles.get(options.containerTag)
+    if (profile && profile.facts.length > 0) {
+      combinedResults.push({
+        content: formatProfileContext(profile),
+        _type: "profile",
+        score: 0,
+        vectorScore: 0,
+        bm25Score: 0,
+        sessionId: "",
+        chunkIndex: -1,
+      })
+    }
+
     return combinedResults
   }
 
@@ -588,12 +789,14 @@ export class RAGProvider implements Provider {
       await this.containerLock.writeLock(containerTag)
       try {
         this.searchEngine.clear(containerTag)
+        this.factStore.clear(containerTag)
         this.graphs.get(containerTag)?.clear()
         this.graphs.delete(containerTag)
       } finally {
         this.containerLock.writeUnlock(containerTag)
       }
     }
+    this.profiles.delete(containerTag)
     logger.info(`Cleared RAG data for: ${containerTag}`)
   }
 }

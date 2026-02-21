@@ -242,6 +242,7 @@ export class Orchestrator {
           question: q.question,
           groundTruth: q.groundTruth,
           questionType: q.questionType,
+          questionDate: q.metadata?.questionDate as string | undefined,
         })
       }
 

@@ -3,7 +3,7 @@ import { generateText } from "ai"
 import type { UnifiedSession } from "../types/unified"
 import { logger } from "../utils/logger"
 
-const EXTRACTION_MODEL = "gpt-5-mini"
+const EXTRACTION_MODEL = "gpt-5-nano"
 
 export interface ParsedExtraction {
   memoriesText: string

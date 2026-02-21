@@ -2,7 +2,7 @@ import { createOpenAI } from "@ai-sdk/openai"
 import { generateText } from "ai"
 import { logger } from "../../utils/logger"
 
-const DECOMPOSE_MODEL = "gpt-5-mini"
+const DECOMPOSE_MODEL = "gpt-5-nano"
 
 export function isCountingQuery(query: string): boolean {
   const q = query.toLowerCase()

@@ -383,6 +383,16 @@ export class HybridSearchEngine {
     this.containers.delete(containerTag)
   }
 
+  getChunksBySession(containerTag: string, sessionId: string): Chunk[] {
+    const container = this.containers.get(containerTag)
+    if (!container) return []
+    const results: Chunk[] = []
+    for (const chunk of container.chunks.values()) {
+      if (chunk.sessionId === sessionId) results.push(chunk)
+    }
+    return results
+  }
+
   getChunkCount(containerTag: string): number {
     return this.containers.get(containerTag)?.chunks.size || 0
   }

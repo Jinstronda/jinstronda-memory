@@ -193,6 +193,10 @@ export class LongMemEvalBenchmark implements Benchmark {
       const sessions = this.extractSessions(item)
       const sessionIds = sessions.map((s) => s.sessionId)
 
+      const parsedQuestionDate = item.question_date
+        ? parseLongMemEvalDate(item.question_date)
+        : null
+
       this.questions.push({
         questionId: item.question_id,
         question: item.question,
@@ -200,7 +204,8 @@ export class LongMemEvalBenchmark implements Benchmark {
         groundTruth: item.answer,
         haystackSessionIds: sessionIds,
         metadata: {
-          questionDate: item.question_date,
+          questionDate: parsedQuestionDate?.iso ?? item.question_date,
+          questionDateFormatted: parsedQuestionDate?.formatted,
         },
       })
 

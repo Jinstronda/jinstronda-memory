@@ -11,7 +11,7 @@ interface RAGSearchResult {
   date?: string
   eventDate?: string
   metadata?: Record<string, unknown>
-  _type?: "chunk" | "entity" | "relationship"
+  _type?: "chunk" | "entity" | "relationship" | "profile"
   name?: string
   entityType?: string
   source?: string
@@ -19,15 +19,18 @@ interface RAGSearchResult {
   relation?: string
 }
 
-function buildRAGContext(context: unknown[]): { chunks: string; graphContext: string } {
+function buildRAGContext(context: unknown[]): { chunks: string; graphContext: string; profileContext: string } {
   const results = context as RAGSearchResult[]
 
   const chunks: string[] = []
   const entities: string[] = []
   const relationships: string[] = []
+  let profileContext = ""
 
   for (const result of results) {
-    if (result._type === "entity") {
+    if (result._type === "profile") {
+      profileContext = result.content
+    } else if (result._type === "entity") {
       entities.push(`- ${result.name} (${result.entityType}): ${result.content}`)
     } else if (result._type === "relationship") {
       const dateStr = result.date ? ` [${result.date}]` : ""
@@ -57,6 +60,7 @@ ${result.content}
   return {
     chunks: chunks.length > 0 ? chunks.join("\n\n") : "No relevant memory chunks retrieved.",
     graphContext,
+    profileContext,
   }
 }
 
@@ -65,7 +69,11 @@ export function buildRAGAnswerPrompt(
   context: unknown[],
   questionDate?: string
 ): string {
-  const { chunks, graphContext } = buildRAGContext(context)
+  const { chunks, graphContext, profileContext } = buildRAGContext(context)
+
+  const profileSection = profileContext
+    ? `\n${profileContext}\n`
+    : ""
 
   const graphSection = graphContext
     ? `\n<knowledge_graph>\n${graphContext}\n</knowledge_graph>\n`
@@ -75,7 +83,7 @@ export function buildRAGAnswerPrompt(
 
 Question: ${question}
 Question Date: ${questionDate || "Not specified"}
-${graphSection}
+${profileSection}${graphSection}
 <retrieved_memories>
 ${chunks}
 </retrieved_memories>
@@ -84,7 +92,8 @@ ${chunks}
 The context contains memories extracted from past conversations. Each memory has:
 1. **Content**: extracted facts, preferences, events, and details from conversations
 2. **Date**: when the event/conversation occurred (in YYYY-MM-DD format)
-3. **Knowledge Graph** (if present): entity relationships useful for multi-hop questions
+3. **User Profile** (if present): static biographical facts about the user (name, location, relationships, etc.)
+4. **Knowledge Graph** (if present): entity relationships useful for multi-hop questions
 
 **How to Answer:**
 

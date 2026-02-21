@@ -2,6 +2,7 @@ import pg from "pg"
 import pgvector from "pgvector/pg"
 import type { Chunk, SearchResult } from "./search"
 import type { RelationshipEdge, GraphSearchResult } from "./graph"
+import type { AtomicFact, FactSearchResult } from "./facts"
 
 const { Pool } = pg
 
@@ -81,6 +82,22 @@ export class PgStore {
 
       await client.query(`CREATE INDEX IF NOT EXISTS idx_rel_source ON rag_relationships(container_tag, source)`)
       await client.query(`CREATE INDEX IF NOT EXISTS idx_rel_target ON rag_relationships(container_tag, target)`)
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS rag_facts (
+          id TEXT PRIMARY KEY,
+          container_tag TEXT NOT NULL,
+          content TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          fact_index INTEGER NOT NULL,
+          embedding vector(${EMBEDDING_DIMS}) NOT NULL,
+          date TEXT,
+          event_date TEXT
+        )
+      `)
+
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_facts_container ON rag_facts(container_tag)`)
+      await client.query(`CREATE INDEX IF NOT EXISTS idx_facts_embedding ON rag_facts USING hnsw (embedding vector_cosine_ops)`)
     } finally {
       client.release()
     }
@@ -350,6 +367,109 @@ export class PgStore {
     return rows[0].count
   }
 
+  async addFacts(containerTag: string, facts: AtomicFact[]): Promise<void> {
+    if (facts.length === 0) return
+
+    const client = await this.pool.connect()
+    try {
+      await client.query("BEGIN")
+
+      for (const fact of facts) {
+        await client.query(
+          `INSERT INTO rag_facts (id, container_tag, content, session_id, fact_index, embedding, date, event_date)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (id) DO UPDATE SET
+             content = EXCLUDED.content,
+             session_id = EXCLUDED.session_id,
+             fact_index = EXCLUDED.fact_index,
+             embedding = EXCLUDED.embedding,
+             date = EXCLUDED.date,
+             event_date = EXCLUDED.event_date`,
+          [
+            fact.id,
+            containerTag,
+            fact.content,
+            fact.sessionId,
+            fact.factIndex,
+            pgvector.toSql(fact.embedding),
+            fact.date || null,
+            fact.eventDate || null,
+          ]
+        )
+      }
+
+      await client.query("COMMIT")
+    } catch (e) {
+      await client.query("ROLLBACK")
+      throw e
+    } finally {
+      client.release()
+    }
+  }
+
+  async searchFacts(
+    containerTag: string,
+    queryEmbedding: number[],
+    limit: number
+  ): Promise<FactSearchResult[]> {
+    const embeddingSql = pgvector.toSql(queryEmbedding)
+
+    const { rows } = await this.pool.query(
+      `SELECT id, content, session_id, fact_index, date, event_date,
+        1 - (embedding <=> $1::vector) AS score
+      FROM rag_facts
+      WHERE container_tag = $2
+      ORDER BY embedding <=> $1::vector
+      LIMIT $3`,
+      [embeddingSql, containerTag, limit]
+    )
+
+    return rows.map((row) => ({
+      content: row.content,
+      score: parseFloat(row.score),
+      sessionId: row.session_id,
+      date: row.date || undefined,
+      eventDate: row.event_date || undefined,
+      factIndex: row.fact_index,
+    }))
+  }
+
+  async getChunksBySession(containerTag: string, sessionId: string): Promise<SearchResult[]> {
+    const { rows } = await this.pool.query(
+      `SELECT content, session_id, chunk_index, date, event_date, metadata
+       FROM rag_chunks WHERE container_tag = $1 AND session_id = $2
+       ORDER BY chunk_index`,
+      [containerTag, sessionId]
+    )
+    return rows.map((row) => ({
+      content: row.content,
+      score: 0,
+      vectorScore: 0,
+      bm25Score: 0,
+      sessionId: row.session_id,
+      chunkIndex: row.chunk_index,
+      date: row.date || undefined,
+      eventDate: row.event_date || undefined,
+      metadata: row.metadata || undefined,
+    }))
+  }
+
+  async hasFactData(containerTag: string): Promise<boolean> {
+    const { rows } = await this.pool.query(
+      "SELECT 1 FROM rag_facts WHERE container_tag = $1 LIMIT 1",
+      [containerTag]
+    )
+    return rows.length > 0
+  }
+
+  async getFactCount(containerTag: string): Promise<number> {
+    const { rows } = await this.pool.query(
+      "SELECT COUNT(*)::int AS count FROM rag_facts WHERE container_tag = $1",
+      [containerTag]
+    )
+    return rows[0].count
+  }
+
   async clear(containerTag: string): Promise<void> {
     const client = await this.pool.connect()
     try {
@@ -357,6 +477,7 @@ export class PgStore {
       await client.query("DELETE FROM rag_chunks WHERE container_tag = $1", [containerTag])
       await client.query("DELETE FROM rag_entities WHERE container_tag = $1", [containerTag])
       await client.query("DELETE FROM rag_relationships WHERE container_tag = $1", [containerTag])
+      await client.query("DELETE FROM rag_facts WHERE container_tag = $1", [containerTag])
       await client.query("COMMIT")
     } catch (e) {
       await client.query("ROLLBACK")
