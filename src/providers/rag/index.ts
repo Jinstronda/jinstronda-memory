@@ -15,27 +15,19 @@ import { HybridSearchEngine } from "./search"
 import type { Chunk, SearchResult } from "./search"
 import { RAG_PROMPTS } from "./prompts"
 import { extractMemories, parseExtractionOutput } from "../../prompts/extraction"
-
+import { rerankResults } from "./reranker"
+import { rewriteQuery } from "./rewrite"
 import { isCountingQuery, decomposeQuery } from "./decompose"
 import { EntityGraph } from "./graph"
 import type { SerializedGraph, GraphSearchResult } from "./graph"
 import { ContainerLock } from "./lock"
 import { InMemoryFactStore } from "./facts"
 import type { AtomicFact, FactSearchResult } from "./facts"
-
 import { buildProfile, formatProfileContext } from "./profile"
 import type { UserProfile } from "./profile"
+import { loadConfig, type RAGConfig } from "./config"
 
-const CHUNK_SIZE = 1600
-const CHUNK_OVERLAP = 320
 const EMBEDDING_BATCH_SIZE = 100
-const EMBEDDING_MODEL = "text-embedding-3-large"
-const RERANK_OVERFETCH = 10
-const EXTRACTION_CONCURRENCY = 10
-const MAX_GLOBAL_EXTRACTIONS = 300
-const FACT_SEARCH_LIMIT = 30
-const FACT_SESSION_BOOST = 0.1
-const CACHE_DIR = "./data/cache/rag"
 
 function chunkText(text: string, chunkSize: number = CHUNK_SIZE, overlap: number = CHUNK_OVERLAP): string[] {
   if (text.length <= chunkSize) {
@@ -95,9 +87,10 @@ export class RAGProvider implements Provider {
   private factStore = new InMemoryFactStore()
   private profiles = new Map<string, UserProfile>()
   private pgStore: any = null
+  cfg: RAGConfig = loadConfig()
 
   private async acquireExtractionSlot(): Promise<void> {
-    if (this.activeGlobalExtractions < MAX_GLOBAL_EXTRACTIONS) {
+    if (this.activeGlobalExtractions < this.cfg.maxGlobalExtractions) {
       this.activeGlobalExtractions++
       return
     }
@@ -123,7 +116,7 @@ export class RAGProvider implements Provider {
   }
 
   private getCacheDir(containerTag: string): string {
-    return `${CACHE_DIR}/${containerTag}`
+    return `${this.cfg.cacheDir}/${containerTag}`
   }
 
   private async saveToCache(containerTag: string): Promise<void> {
@@ -256,7 +249,15 @@ export class RAGProvider implements Provider {
       logger.info("Using PostgreSQL + pgvector backend")
     }
 
-    logger.info("Initialized RAG provider (hybrid search + entity graph + LLM reranker)")
+    const flags = [
+      this.cfg.enableGraphRAG && "graph",
+      this.cfg.enableAtomicFacts && "facts",
+      this.cfg.enableReranker && "reranker",
+      this.cfg.enableQueryRewrite && "rewrite",
+      this.cfg.enableQueryDecomposition && "decompose",
+      this.cfg.enableProfile && "profile",
+    ].filter(Boolean).join(" + ")
+    logger.info(`Initialized RAG provider (${flags || "hybrid search only"})`)
   }
 
   async ingest(sessions: UnifiedSession[], options: IngestOptions): Promise<IngestResult> {
@@ -316,13 +317,13 @@ export class RAGProvider implements Provider {
       }
     }
 
-    logger.info(`[ingest] ${options.containerTag}: ${sessions.length} sessions, extraction concurrency: ${EXTRACTION_CONCURRENCY}`)
+    logger.info(`[ingest] ${options.containerTag}: ${sessions.length} sessions, extraction concurrency: ${this.cfg.extractionConcurrency}`)
 
     const extractions: string[] = []
-    for (let i = 0; i < sessions.length; i += EXTRACTION_CONCURRENCY) {
-      const batch = sessions.slice(i, i + EXTRACTION_CONCURRENCY)
-      const batchNum = Math.floor(i / EXTRACTION_CONCURRENCY) + 1
-      const totalBatches = Math.ceil(sessions.length / EXTRACTION_CONCURRENCY)
+    for (let i = 0; i < sessions.length; i += this.cfg.extractionConcurrency) {
+      const batch = sessions.slice(i, i + this.cfg.extractionConcurrency)
+      const batchNum = Math.floor(i / this.cfg.extractionConcurrency) + 1
+      const totalBatches = Math.ceil(sessions.length / this.cfg.extractionConcurrency)
       logger.info(`[ingest] ${options.containerTag}: extraction batch ${batchNum}/${totalBatches} (${batch.length} sessions)`)
       const results = await Promise.all(batch.map(extractSession))
       extractions.push(...results)
@@ -340,32 +341,14 @@ export class RAGProvider implements Provider {
       return { session, parsed, dateStr }
     })
 
-    if (this.pgStore) {
-      for (const { session, parsed } of parsedSessions) {
-        for (const entity of parsed.entities) {
-          await this.pgStore.addEntity(options.containerTag, entity.name, entity.type, entity.summary, session.sessionId)
-        }
-        for (const rel of parsed.relationships) {
-          await this.pgStore.addRelationship(options.containerTag, {
-            source: rel.source,
-            target: rel.target,
-            relation: rel.relation,
-            date: rel.date,
-            sessionId: session.sessionId,
-          })
-        }
-        totalEntities += parsed.entities.length
-        totalRelationships += parsed.relationships.length
-      }
-    } else {
-      await this.containerLock.writeLock(options.containerTag)
-      try {
+    if (this.cfg.enableEntityGraph) {
+      if (this.pgStore) {
         for (const { session, parsed } of parsedSessions) {
           for (const entity of parsed.entities) {
-            graph.addEntity(entity.name, entity.type, entity.summary, session.sessionId)
+            await this.pgStore.addEntity(options.containerTag, entity.name, entity.type, entity.summary, session.sessionId)
           }
           for (const rel of parsed.relationships) {
-            graph.addRelationship({
+            await this.pgStore.addRelationship(options.containerTag, {
               source: rel.source,
               target: rel.target,
               relation: rel.relation,
@@ -376,8 +359,28 @@ export class RAGProvider implements Provider {
           totalEntities += parsed.entities.length
           totalRelationships += parsed.relationships.length
         }
-      } finally {
-        this.containerLock.writeUnlock(options.containerTag)
+      } else {
+        await this.containerLock.writeLock(options.containerTag)
+        try {
+          for (const { session, parsed } of parsedSessions) {
+            for (const entity of parsed.entities) {
+              graph.addEntity(entity.name, entity.type, entity.summary, session.sessionId)
+            }
+            for (const rel of parsed.relationships) {
+              graph.addRelationship({
+                source: rel.source,
+                target: rel.target,
+                relation: rel.relation,
+                date: rel.date,
+                sessionId: session.sessionId,
+              })
+            }
+            totalEntities += parsed.entities.length
+            totalRelationships += parsed.relationships.length
+          }
+        } finally {
+          this.containerLock.writeUnlock(options.containerTag)
+        }
       }
     }
 
@@ -386,7 +389,7 @@ export class RAGProvider implements Provider {
     for (const { session, parsed, dateStr } of parsedSessions) {
       const dateHeader = `# Memories from ${dateStr}\n\n`
       const content = dateHeader + parsed.memoriesText
-      const textChunks = chunkText(content)
+      const textChunks = chunkText(content, this.cfg.chunkSize, this.cfg.chunkOverlap)
 
       for (let i = 0; i < textChunks.length; i++) {
         const dateMatches = textChunks[i].match(/\[(\d{4}-\d{2}-\d{2})\]/g)
@@ -430,7 +433,7 @@ export class RAGProvider implements Provider {
       return { documentIds: [] }
     }
 
-    const embeddingModel = this.openai.embedding(EMBEDDING_MODEL)
+    const embeddingModel = this.openai.embedding(this.cfg.embeddingModel)
 
     const embedBatch = async (texts: string[]): Promise<number[][]> => {
       for (let attempt = 0; ; attempt++) {
@@ -532,11 +535,11 @@ export class RAGProvider implements Provider {
       }
     }
 
-    const [embeddedChunks, embeddedFacts] = await Promise.all([
-      embedAndStoreChunks(),
-      embedAndStoreFacts(),
-      buildProfileAsync(),
-    ])
+    const ingestTasks: Promise<any>[] = [embedAndStoreChunks()]
+    if (this.cfg.enableAtomicFacts) ingestTasks.push(embedAndStoreFacts())
+    if (this.cfg.enableProfileBuilding) ingestTasks.push(buildProfileAsync())
+
+    const [embeddedChunks, embeddedFacts] = await Promise.all(ingestTasks)
 
     if (!this.pgStore) {
       await this.saveToCache(options.containerTag)
@@ -565,11 +568,15 @@ export class RAGProvider implements Provider {
   async search(query: string, options: SearchOptions): Promise<unknown[]> {
     if (!this.openai) throw new Error("Provider not initialized")
 
-    const embeddingModel = this.openai.embedding(EMBEDDING_MODEL)
+    const searchQuery = this.cfg.enableQueryRewrite
+      ? await rewriteQuery(this.openai, query)
+      : query
+
+    const embeddingModel = this.openai.embedding(this.cfg.embeddingModel)
     let queryEmbedding: number[]
     for (let attempt = 0; ; attempt++) {
       try {
-        const result = await embed({ model: embeddingModel, value: query })
+        const result = await embed({ model: embeddingModel, value: searchQuery })
         queryEmbedding = result.embedding
         break
       } catch (e) {
@@ -579,7 +586,7 @@ export class RAGProvider implements Provider {
     }
 
     const limit = options.limit || 10
-    const overfetchLimit = Math.max(limit, RERANK_OVERFETCH)
+    const overfetchLimit = this.cfg.enableReranker ? Math.max(limit, this.cfg.rerankOverfetch) : limit
 
     let hybridResults: SearchResult[]
     let graphResult: GraphSearchResult | null = null
@@ -587,22 +594,28 @@ export class RAGProvider implements Provider {
     let factResults: FactSearchResult[] = []
 
     if (this.pgStore) {
-      const graphEntityPromise = this.pgStore.findEntitiesInQuery(options.containerTag, query)
+      const promises: Promise<any>[] = [
+        this.cfg.enableAtomicFacts
+          ? this.pgStore.searchFacts(options.containerTag, queryEmbedding, this.cfg.factSearchLimit)
+          : Promise.resolve([]),
+        this.pgStore.search(options.containerTag, queryEmbedding, searchQuery, overfetchLimit),
+        this.cfg.enableGraphRAG
+          ? this.pgStore.findEntitiesInQuery(options.containerTag, query)
+          : Promise.resolve([]),
+      ]
 
-      const [fr, searchResults, queryEntities] = await Promise.all([
-        this.pgStore.searchFacts(options.containerTag, queryEmbedding, FACT_SEARCH_LIMIT),
-        this.pgStore.search(options.containerTag, queryEmbedding, query, overfetchLimit),
-        graphEntityPromise,
-      ])
+      const [fr, searchResults, queryEntities] = await Promise.all(promises)
 
       factResults = fr
       hybridResults = searchResults
-      for (const f of factResults) factMatchedSessions.add(f.sessionId)
-      if (factResults.length > 0) {
-        logger.debug(`[facts] Found ${factResults.length} matching facts from ${factMatchedSessions.size} sessions (pg)`)
+      if (this.cfg.enableAtomicFacts) {
+        for (const f of factResults) factMatchedSessions.add(f.sessionId)
+        if (factResults.length > 0) {
+          logger.debug(`[facts] Found ${factResults.length} matching facts from ${factMatchedSessions.size} sessions (pg)`)
+        }
       }
 
-      if (queryEntities.length > 0) {
+      if (this.cfg.enableGraphRAG && queryEntities.length > 0) {
         graphResult = await this.pgStore.getContext(options.containerTag, queryEntities, 2)
         logger.debug(`Graph: found ${queryEntities.length} entities, added ${graphResult!.entities.length} nodes + ${graphResult!.relationships.length} edges`)
       }
@@ -613,20 +626,24 @@ export class RAGProvider implements Provider {
 
       await this.containerLock.readLock(options.containerTag)
       try {
-        factResults = this.factStore.search(options.containerTag, queryEmbedding, FACT_SEARCH_LIMIT)
-        for (const f of factResults) factMatchedSessions.add(f.sessionId)
-        if (factResults.length > 0) {
-          logger.debug(`[facts] Found ${factResults.length} matching facts from ${factMatchedSessions.size} sessions`)
+        if (this.cfg.enableAtomicFacts) {
+          factResults = this.factStore.search(options.containerTag, queryEmbedding, this.cfg.factSearchLimit)
+          for (const f of factResults) factMatchedSessions.add(f.sessionId)
+          if (factResults.length > 0) {
+            logger.debug(`[facts] Found ${factResults.length} matching facts from ${factMatchedSessions.size} sessions`)
+          }
         }
 
-        hybridResults = this.searchEngine.search(options.containerTag, queryEmbedding, query, overfetchLimit)
+        hybridResults = this.searchEngine.search(options.containerTag, queryEmbedding, searchQuery, overfetchLimit)
 
-        const graph = this.graphs.get(options.containerTag)
-        if (graph && graph.nodeCount > 0) {
-          const queryEntities = graph.findEntitiesInQuery(query)
-          if (queryEntities.length > 0) {
-            graphResult = graph.getContext(queryEntities, 2)
-            logger.debug(`Graph: found ${queryEntities.length} entities, added ${graphResult.entities.length} nodes + ${graphResult.relationships.length} edges`)
+        if (this.cfg.enableGraphRAG) {
+          const graph = this.graphs.get(options.containerTag)
+          if (graph && graph.nodeCount > 0) {
+            const queryEntities = graph.findEntitiesInQuery(query)
+            if (queryEntities.length > 0) {
+              graphResult = graph.getContext(queryEntities, 2)
+              logger.debug(`Graph: found ${queryEntities.length} entities, added ${graphResult.entities.length} nodes + ${graphResult.relationships.length} edges`)
+            }
           }
         }
       } finally {
@@ -634,18 +651,16 @@ export class RAGProvider implements Provider {
       }
     }
 
-    // Boost chunks from fact-matched sessions
-    if (factMatchedSessions.size > 0) {
+    if (this.cfg.enableFactSessionBoost && factMatchedSessions.size > 0) {
       for (const r of hybridResults) {
         if (factMatchedSessions.has(r.sessionId)) {
-          r.score += FACT_SESSION_BOOST
+          r.score += this.cfg.factSessionBoost
         }
       }
       hybridResults.sort((a, b) => b.score - a.score)
     }
 
-    // Include parent chunks for top matched facts
-    if (factResults.length > 0) {
+    if (this.cfg.enableAtomicFacts && factResults.length > 0) {
       const existingKeys = new Set(hybridResults.map(r => `${r.sessionId}_${r.chunkIndex}`))
       const topFacts = factResults.slice(0, 10)
       const uniqueSessions = [...new Set(topFacts.map(f => f.sessionId))]
@@ -689,11 +704,10 @@ export class RAGProvider implements Provider {
 
     logger.debug(`Hybrid search: ${hybridResults.length} results for "${query.substring(0, 50)}..."`)
 
-    if (isCountingQuery(query)) {
+    if (this.cfg.enableQueryDecomposition && isCountingQuery(query)) {
       const subQueries = await decomposeQuery(this.openai!, query)
       const existingKeys = new Set(hybridResults.map(r => `${r.sessionId}_${r.chunkIndex}`))
 
-      // Parallel: embed + search all sub-queries concurrently
       const subResultsArrays = await Promise.all(
         subQueries.slice(1).map(async (subQuery) => {
           const subEmbed = await embed({ model: embeddingModel, value: subQuery })
@@ -723,11 +737,16 @@ export class RAGProvider implements Provider {
       logger.debug(`[decompose] Merged ${hybridResults.length} total results for counting query`)
     }
 
-    const finalChunks = hybridResults.slice(0, limit)
+    let finalChunks = hybridResults.slice(0, this.cfg.enableReranker ? Math.max(limit, this.cfg.rerankOverfetch) : limit)
+    if (this.cfg.enableReranker && finalChunks.length > limit) {
+      finalChunks = await rerankResults(this.openai, query, finalChunks, limit)
+    } else {
+      finalChunks = finalChunks.slice(0, limit)
+    }
 
     const combinedResults: unknown[] = [...finalChunks]
 
-    if (graphResult) {
+    if (this.cfg.enableGraphRAG && graphResult) {
       for (const entity of graphResult.entities) {
         combinedResults.push({
           content: entity.summary,
@@ -759,8 +778,7 @@ export class RAGProvider implements Provider {
       }
     }
 
-    // Inject user profile as always-present context
-    const profile = this.profiles.get(options.containerTag)
+    const profile = this.cfg.enableProfile ? this.profiles.get(options.containerTag) : null
     if (profile && profile.facts.length > 0) {
       combinedResults.push({
         content: formatProfileContext(profile),
