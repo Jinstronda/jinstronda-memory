@@ -15,7 +15,7 @@ import { HybridSearchEngine } from "./search"
 import type { Chunk, SearchResult } from "./search"
 import { RAG_PROMPTS } from "./prompts"
 import { extractMemories, parseExtractionOutput } from "../../prompts/extraction"
-import { rerankResults } from "./reranker"
+
 import { isCountingQuery, decomposeQuery } from "./decompose"
 import { EntityGraph } from "./graph"
 import type { SerializedGraph, GraphSearchResult } from "./graph"
@@ -30,7 +30,7 @@ const CHUNK_SIZE = 1600
 const CHUNK_OVERLAP = 320
 const EMBEDDING_BATCH_SIZE = 100
 const EMBEDDING_MODEL = "text-embedding-3-large"
-const RERANK_OVERFETCH = 40
+const RERANK_OVERFETCH = 10
 const EXTRACTION_CONCURRENCY = 10
 const MAX_GLOBAL_EXTRACTIONS = 300
 const FACT_SEARCH_LIMIT = 30
@@ -723,10 +723,7 @@ export class RAGProvider implements Provider {
       logger.debug(`[decompose] Merged ${hybridResults.length} total results for counting query`)
     }
 
-    let finalChunks = hybridResults
-    if (hybridResults.length > limit) {
-      finalChunks = await rerankResults(this.openai, query, hybridResults, limit)
-    }
+    const finalChunks = hybridResults.slice(0, limit)
 
     const combinedResults: unknown[] = [...finalChunks]
 
