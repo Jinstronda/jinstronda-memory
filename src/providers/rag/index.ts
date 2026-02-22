@@ -290,7 +290,7 @@ export class RAGProvider implements Provider {
       const doExtract = async (): Promise<string> => {
         await this.acquireExtractionSlot()
         try {
-          logger.info(`[extract] START ${session.sessionId} (active: ${activeExtractions}, global: ${this.activeGlobalExtractions}/${MAX_GLOBAL_EXTRACTIONS}, queue: ${this.extractionQueue.length})`)
+          logger.info(`[extract] START ${session.sessionId} (active: ${activeExtractions}, global: ${this.activeGlobalExtractions}/${this.cfg.maxGlobalExtractions}, queue: ${this.extractionQueue.length})`)
           return await extractMemories(this.openai!, session)
         } finally {
           this.releaseExtractionSlot()
@@ -304,7 +304,7 @@ export class RAGProvider implements Provider {
         activeExtractions--
         completedExtractions++
         if (completedExtractions % 10 === 0 || completedExtractions <= 3) {
-          logger.info(`[extract] DONE ${session.sessionId} (completed: ${completedExtractions}, cached: ${cachedHits}, dedup: ${dedupHits}, global: ${this.activeGlobalExtractions}/${MAX_GLOBAL_EXTRACTIONS})`)
+          logger.info(`[extract] DONE ${session.sessionId} (completed: ${completedExtractions}, cached: ${cachedHits}, dedup: ${dedupHits}, global: ${this.activeGlobalExtractions}/${this.cfg.maxGlobalExtractions})`)
         }
         return result
       } catch (e) {
