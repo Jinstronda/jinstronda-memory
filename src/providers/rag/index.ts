@@ -22,7 +22,7 @@ import type { SerializedGraph, GraphSearchResult } from "./graph"
 import { ContainerLock } from "./lock"
 import { InMemoryFactStore } from "./facts"
 import type { AtomicFact, FactSearchResult } from "./facts"
-import { rewriteQuery } from "./rewrite"
+
 import { buildProfile, formatProfileContext } from "./profile"
 import type { UserProfile } from "./profile"
 
@@ -565,14 +565,11 @@ export class RAGProvider implements Provider {
   async search(query: string, options: SearchOptions): Promise<unknown[]> {
     if (!this.openai) throw new Error("Provider not initialized")
 
-    // Rewrite query for better retrieval
-    const rewrittenQuery = await rewriteQuery(this.openai, query)
-
     const embeddingModel = this.openai.embedding(EMBEDDING_MODEL)
     let queryEmbedding: number[]
     for (let attempt = 0; ; attempt++) {
       try {
-        const result = await embed({ model: embeddingModel, value: rewrittenQuery })
+        const result = await embed({ model: embeddingModel, value: query })
         queryEmbedding = result.embedding
         break
       } catch (e) {
@@ -594,7 +591,7 @@ export class RAGProvider implements Provider {
 
       const [fr, searchResults, queryEntities] = await Promise.all([
         this.pgStore.searchFacts(options.containerTag, queryEmbedding, FACT_SEARCH_LIMIT),
-        this.pgStore.search(options.containerTag, queryEmbedding, rewrittenQuery, overfetchLimit),
+        this.pgStore.search(options.containerTag, queryEmbedding, query, overfetchLimit),
         graphEntityPromise,
       ])
 
@@ -622,7 +619,7 @@ export class RAGProvider implements Provider {
           logger.debug(`[facts] Found ${factResults.length} matching facts from ${factMatchedSessions.size} sessions`)
         }
 
-        hybridResults = this.searchEngine.search(options.containerTag, queryEmbedding, rewrittenQuery, overfetchLimit)
+        hybridResults = this.searchEngine.search(options.containerTag, queryEmbedding, query, overfetchLimit)
 
         const graph = this.graphs.get(options.containerTag)
         if (graph && graph.nodeCount > 0) {
@@ -798,6 +795,10 @@ export class RAGProvider implements Provider {
     }
     this.profiles.delete(containerTag)
     logger.info(`Cleared RAG data for: ${containerTag}`)
+  }
+
+  getProfile(containerTag: string): UserProfile | null {
+    return this.profiles.get(containerTag) ?? null
   }
 }
 

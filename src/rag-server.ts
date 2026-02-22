@@ -111,25 +111,10 @@ async function handleStore(req: Request): Promise<Response> {
 }
 
 async function handleProfile(containerTag: string): Promise<Response> {
-  // profiles map is private; retrieve via search and extract profile result
-  const raw = await provider.search("user profile information", {
-    containerTag,
-    limit: 1,
-  })
-
-  for (const r of raw) {
-    const item = r as Record<string, unknown>
-    if (item._type === "profile") {
-      const content = item.content as string
-      const facts = content
-        .replace(/<\/?user_profile>/g, "")
-        .split("\n")
-        .map((l) => l.replace(/^-\s*/, "").trim())
-        .filter((l) => l.length > 0)
-      return json({ facts })
-    }
+  const profile = provider.getProfile(containerTag)
+  if (profile && profile.facts.length > 0) {
+    return json({ facts: profile.facts })
   }
-
   return json({ facts: [] })
 }
 
