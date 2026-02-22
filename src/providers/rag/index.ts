@@ -15,8 +15,6 @@ import { HybridSearchEngine } from "./search"
 import type { Chunk, SearchResult } from "./search"
 import { RAG_PROMPTS } from "./prompts"
 import { extractMemories, parseExtractionOutput } from "../../prompts/extraction"
-import { rerankResults } from "./reranker"
-import { rewriteQuery } from "./rewrite"
 import { isCountingQuery, decomposeQuery } from "./decompose"
 import { EntityGraph } from "./graph"
 import type { SerializedGraph, GraphSearchResult } from "./graph"
@@ -568,9 +566,11 @@ export class RAGProvider implements Provider {
   async search(query: string, options: SearchOptions): Promise<unknown[]> {
     if (!this.openai) throw new Error("Provider not initialized")
 
-    const searchQuery = this.cfg.enableQueryRewrite
-      ? await rewriteQuery(this.openai, query)
-      : query
+    let searchQuery = query
+    if (this.cfg.enableQueryRewrite) {
+      const { rewriteQuery } = await import("./rewrite")
+      searchQuery = await rewriteQuery(this.openai, query)
+    }
 
     const embeddingModel = this.openai.embedding(this.cfg.embeddingModel)
     let queryEmbedding: number[]
@@ -739,6 +739,7 @@ export class RAGProvider implements Provider {
 
     let finalChunks = hybridResults.slice(0, this.cfg.enableReranker ? Math.max(limit, this.cfg.rerankOverfetch) : limit)
     if (this.cfg.enableReranker && finalChunks.length > limit) {
+      const { rerankResults } = await import("./reranker")
       finalChunks = await rerankResults(this.openai, query, finalChunks, limit)
     } else {
       finalChunks = finalChunks.slice(0, limit)
