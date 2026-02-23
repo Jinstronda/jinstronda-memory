@@ -78,6 +78,42 @@ Six retrieval signals fused together:
 
 Everything runs locally. The only external calls are to OpenAI for embeddings and LLM inference. No memory API subscriptions. No data leaving your machine except to the model provider.
 
+## Dual-Layer Memory
+
+The system now splits memory into two specialized layers, each doing what it does best.
+
+**mem0 sidecar** (Python, port 3848): fact extraction, knowledge graph, profile building. When you say "I moved from Madrid to Berlin," mem0 extracts the fact, updates the graph, and replaces the old "lives in Madrid" entry. It handles the structured knowledge.
+
+**RAG server** (Bun, port 3847): chunk storage and hybrid search. Full conversation chunks with BM25 + vector similarity. When you need the exact context of a discussion, the raw chunks have everything.
+
+Two tools exposed to the LLM:
+- `memory_recall`: quick facts and relationships from mem0. Preferences, personal info, who knows who.
+- `memory_deep_search`: full conversation history from RAG chunks. Exact quotes, detailed context, complete discussions.
+
+The LLM picks which tool to use based on the question. "What's my favorite coffee?" hits mem0. "What did we discuss about the migration last week?" hits RAG.
+
+```bash
+# Start both servers
+cd mem0-server && source .venv/bin/activate && python server.py &
+bun run src/rag-server.ts &
+```
+
+```bash
+# mem0 sidecar endpoints
+POST /add              # extract facts from messages
+GET  /search           # search facts by query
+GET  /memories         # list all memories for a user
+GET  /graph            # search graph relationships
+GET  /graph/deep       # 2-hop BFS graph traversal
+DELETE /memories/:id   # delete a memory
+DELETE /memories       # delete all for a user
+
+# RAG server endpoints
+POST /ingest           # store conversation chunks
+POST /search           # hybrid BM25 + vector search
+DELETE /clear/:tag     # clear container data
+```
+
 ## Quick Start
 
 ```bash
@@ -109,8 +145,12 @@ Search queries both. Every session starts by loading context. Breakthroughs get 
 ```bash
 OPENAI_API_KEY=           # Required (embeddings + LLM)
 DATABASE_URL=             # Optional (PostgreSQL + pgvector for production)
-RAG_PORT=3847             # Optional (server port)
+RAG_PORT=3847             # Optional (RAG server port)
 RAG_CACHE_DIR=            # Optional (defaults to ./data/cache/rag)
+MEM0_PORT=3848            # Optional (mem0 sidecar port)
+MEM0_DATA_DIR=            # Optional (defaults to ./data)
+MEM0_LLM_MODEL=           # Optional (defaults to gpt-5-mini)
+MEM0_EMBEDDING_MODEL=     # Optional (defaults to text-embedding-3-small)
 ```
 
 ## Commands
