@@ -75,15 +75,9 @@ async function handleSearch(req: Request): Promise<Response> {
     limit: body.limit,
   })
 
-  let profile: string | undefined
   const results: Array<{ content: string; score: number; type: string }> = []
-
   for (const r of raw) {
     const item = r as Record<string, unknown>
-    if (item._type === "profile") {
-      profile = item.content as string
-      continue
-    }
     results.push({
       content: (item.content as string) || "",
       score: (item.score as number) || 0,
@@ -91,7 +85,7 @@ async function handleSearch(req: Request): Promise<Response> {
     })
   }
 
-  return json({ results, profile })
+  return json({ results })
 }
 
 async function handleStore(req: Request): Promise<Response> {
@@ -108,14 +102,6 @@ async function handleStore(req: Request): Promise<Response> {
 
   await provider.ingest([session], { containerTag: body.containerTag })
   return json({ ok: true })
-}
-
-async function handleProfile(containerTag: string): Promise<Response> {
-  const profile = provider.getProfile(containerTag)
-  if (profile && profile.facts.length > 0) {
-    return json({ facts: profile.facts })
-  }
-  return json({ facts: [] })
 }
 
 async function handleClear(containerTag: string): Promise<Response> {
@@ -166,11 +152,6 @@ Bun.serve({
 
       if (req.method === "POST" && url.pathname === "/store") {
         return await handleStore(req)
-      }
-
-      const profileMatch = url.pathname.match(/^\/profile\/(.+)$/)
-      if (req.method === "GET" && profileMatch) {
-        return await handleProfile(decodeURIComponent(profileMatch[1]))
       }
 
       const clearMatch = url.pathname.match(/^\/clear\/(.+)$/)
