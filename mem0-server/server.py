@@ -177,11 +177,25 @@ async def graph_deep_search(
     if isinstance(search_result, dict):
         relations = search_result.get("relations", []) or []
 
+    query_terms = {t.lower().replace(" ", "_") for t in query.split() if len(t) > 2}
     seed_entities = set()
     for rel in relations:
-        seed_entities.add(rel.get("source", ""))
-        seed_entities.add(rel.get("destination", ""))
-    seed_entities.discard("")
+        for field in ("source", "destination"):
+            name = (rel.get(field, "") or "").lower().replace(" ", "_")
+            if not name:
+                continue
+            if any(t in name for t in query_terms):
+                seed_entities.add(name)
+
+    if not seed_entities:
+        for rel in relations:
+            for field in ("source", "destination"):
+                name = (rel.get(field, "") or "").lower().replace(" ", "_")
+                if name:
+                    seed_entities.add(name)
+                    break
+            if seed_entities:
+                break
 
     if not seed_entities:
         return {"entities": [], "relationships": []}

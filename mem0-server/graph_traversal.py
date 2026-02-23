@@ -6,6 +6,9 @@ from typing import List, Dict
 
 log = logging.getLogger(__name__)
 
+MAX_NEIGHBORS_PER_NODE = 30
+MAX_TOTAL_RELATIONSHIPS = 200
+
 
 def bfs_traverse(graph_conn, seed_entities: List[str], user_id: str, max_hops: int = 2) -> dict:
     if not graph_conn:
@@ -21,12 +24,18 @@ def bfs_traverse(graph_conn, seed_entities: List[str], user_id: str, max_hops: i
         queue.append((normalized, 0))
 
     while queue:
+        if len(all_relationships) >= MAX_TOTAL_RELATIONSHIPS:
+            break
+
         current, depth = queue.popleft()
         if current in visited or depth > max_hops:
             continue
         visited.add(current)
 
         neighbors = _get_neighbors(graph_conn, current, user_id)
+        if len(neighbors) > MAX_NEIGHBORS_PER_NODE:
+            neighbors = neighbors[:MAX_NEIGHBORS_PER_NODE]
+
         for neighbor in neighbors:
             all_entities.append({"name": neighbor["name"], "type": "entity"})
             all_relationships.append({
