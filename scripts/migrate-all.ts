@@ -17,7 +17,7 @@ const GITHUB_WS = "/tmp/my-clawdbot/workspace"
 const CHROMA = join(HOME, ".openclaw/mem0/data/chroma/chroma.sqlite3")
 const CHUNK_SIZE = 6000
 const MEM0_MAX_TEXT = 50000  // mem0 can handle larger texts via LLM
-const RAG_WORKERS = 5
+const RAG_WORKERS = 500
 const MEM0_WORKERS = 10
 const MAX_RETRIES = 3
 
@@ -25,6 +25,8 @@ type Item = { sid: string; text: string; date?: string; label?: string }
 type Chunk = { sid: string; text: string; date?: string; label?: string }
 
 const stats = { ragOk: 0, ragFail: 0, mem0Ok: 0, mem0Fail: 0 }
+const failedRag: number[] = []
+const failedMem0: number[] = []
 
 async function retry<T>(fn: () => Promise<T>): Promise<T> {
   for (let i = 0; i < MAX_RETRIES; i++) {
@@ -123,6 +125,7 @@ async function ragWorker(chunks: Chunk[], idx: { v: number }) {
       stats.ragOk++
     } catch (e) {
       stats.ragFail++
+      failedRag.push(i)
       console.log(`  FAIL rag [${c.label || c.sid}] ${e}`)
     }
   }
@@ -140,6 +143,7 @@ async function mem0Worker(items: Item[], idx: { v: number }) {
       stats.mem0Ok++
     } catch (e) {
       stats.mem0Fail++
+      failedMem0.push(i)
       console.log(`  FAIL mem0 [${item.label || item.sid}] ${e}`)
     }
   }
@@ -264,10 +268,69 @@ async function main() {
 
   clearInterval(interval)
   const elapsed = ((performance.now() - t0) / 1000).toFixed(1)
-  console.log(`\nDone in ${elapsed}s`)
+  console.log(`\nFirst pass done in ${elapsed}s`)
   console.log(`  RAG:  ${stats.ragOk} ok, ${stats.ragFail} fail (${ragChunks.length} chunks)`)
   console.log(`  mem0: ${stats.mem0Ok} ok, ${stats.mem0Fail} fail (${items.length} items)`)
   console.log(`  Deduped: ${skipCount}`)
+
+  // retry failures with exponential backoff
+  const MAX_RETRY_ROUNDS = 3
+  for (let round = 1; round <= MAX_RETRY_ROUNDS; round++) {
+    const ragRetry = [...failedRag]
+    const mem0Retry = [...failedMem0]
+    if (ragRetry.length === 0 && mem0Retry.length === 0) break
+
+    console.log(`\n[Retry round ${round}/${MAX_RETRY_ROUNDS}] rag: ${ragRetry.length}, mem0: ${mem0Retry.length}`)
+    await new Promise(r => setTimeout(r, 5000 * round))
+
+    failedRag.length = 0
+    failedMem0.length = 0
+    stats.ragFail = 0
+    stats.mem0Fail = 0
+
+    const retryTasks: Promise<void>[] = []
+
+    if (!MEM0_ONLY && ragRetry.length > 0) {
+      retryTasks.push(...ragRetry.map(async (i) => {
+        const c = ragChunks[i]
+        try {
+          await retry(() => post(`${RAG}/ingest`, {
+            containerTag: TAG,
+            sessionId: c.sid,
+            messages: [{ role: "user", content: c.text }],
+            ...(c.date ? { date: c.date } : {}),
+          }))
+          stats.ragOk++
+        } catch (e) {
+          stats.ragFail++
+          failedRag.push(i)
+          console.log(`  RETRY FAIL rag [${c.label || c.sid}] ${e}`)
+        }
+      }))
+    }
+
+    if (!RAG_ONLY && mem0Retry.length > 0) {
+      for (const i of mem0Retry) {
+        const item = items[i]
+        try {
+          await retry(() => post(`${MEM0}/add`, { text: trimForMem0(item.text), user_id: TAG }))
+          stats.mem0Ok++
+        } catch (e) {
+          stats.mem0Fail++
+          failedMem0.push(i)
+          console.log(`  RETRY FAIL mem0 [${item.label || item.sid}] ${e}`)
+        }
+      }
+    }
+
+    await Promise.all(retryTasks)
+    console.log(`  Round ${round}: rag +${ragRetry.length - failedRag.length} recovered, mem0 +${mem0Retry.length - failedMem0.length} recovered`)
+  }
+
+  const totalElapsed = ((performance.now() - t0) / 1000).toFixed(1)
+  console.log(`\nAll done in ${totalElapsed}s`)
+  console.log(`  RAG:  ${stats.ragOk} ok, ${failedRag.length} permanent fail`)
+  console.log(`  mem0: ${stats.mem0Ok} ok, ${failedMem0.length} permanent fail`)
 }
 
 main()

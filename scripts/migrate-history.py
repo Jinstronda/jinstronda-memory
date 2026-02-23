@@ -176,14 +176,32 @@ def main():
     print(f"Targets: {', '.join(targets)}")
     print()
 
+    max_retry_rounds = 3
+
     if do_rag:
         print(f"Phase 1: RAG migration...")
-        run_parallel("RAG", send_to_rag, memories, RAG_CONCURRENCY)
+        ok, fail, failures = run_parallel("RAG", send_to_rag, memories, RAG_CONCURRENCY)
+        for rnd in range(1, max_retry_rounds + 1):
+            if not failures:
+                break
+            print(f"\n  [Retry round {rnd}] {len(failures)} RAG failures...")
+            time.sleep(5 * rnd)
+            retry_mems = [memories[i] for i in failures]
+            ok2, fail2, failures = run_parallel(f"RAG-retry-{rnd}", send_to_rag, retry_mems, RAG_CONCURRENCY)
+            print(f"  Recovered {ok2}, still failing: {len(failures)}")
         print()
 
     if do_mem0:
         print(f"Phase 2: mem0 migration...")
-        run_parallel("mem0", send_to_mem0, memories, mem0_conc)
+        ok, fail, failures = run_parallel("mem0", send_to_mem0, memories, mem0_conc)
+        for rnd in range(1, max_retry_rounds + 1):
+            if not failures:
+                break
+            print(f"\n  [Retry round {rnd}] {len(failures)} mem0 failures...")
+            time.sleep(5 * rnd)
+            retry_mems = [memories[i] for i in failures]
+            ok2, fail2, failures = run_parallel(f"mem0-retry-{rnd}", send_to_mem0, retry_mems, mem0_conc)
+            print(f"  Recovered {ok2}, still failing: {len(failures)}")
         print()
 
     print("Migration complete.")
