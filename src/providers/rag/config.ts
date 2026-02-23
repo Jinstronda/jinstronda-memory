@@ -16,7 +16,7 @@ export interface RAGConfig {
 const defaults: RAGConfig = {
   enableReranker: false,
   enableQueryRewrite: false,
-  enableGraphRAG: true,
+  enableGraphRAG: false,
   enableQueryDecomposition: true,
 
   chunkSize: 1600,

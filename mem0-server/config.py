@@ -24,6 +24,7 @@ def get_mem0_config(data_dir: str = "./data") -> dict:
                 "collection_name": "jinstronda_memories",
                 "path": f"{data_dir}/qdrant",
                 "embedding_model_dims": 1536,
+                "on_disk": True,
             },
         },
         "graph_store": {

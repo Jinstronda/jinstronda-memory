@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 import os
+import asyncio
+import threading
 from contextlib import asynccontextmanager
+from typing import Optional
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -7,22 +12,25 @@ from mem0 import Memory
 from config import get_mem0_config
 from graph_traversal import bfs_traverse
 
-memory: Memory | None = None
+memory: Optional[Memory] = None
+_memory_lock = threading.Lock()
 
 
 def get_memory() -> Memory:
     global memory
     if memory is None:
-        data_dir = os.getenv("MEM0_DATA_DIR", "./data")
-        os.makedirs(data_dir, exist_ok=True)
-        config = get_mem0_config(data_dir)
-        memory = Memory.from_config(config_dict=config)
+        with _memory_lock:
+            if memory is None:
+                data_dir = os.getenv("MEM0_DATA_DIR", "./data")
+                os.makedirs(data_dir, exist_ok=True)
+                config = get_mem0_config(data_dir)
+                memory = Memory.from_config(config_dict=config)
     return memory
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    get_memory()
+    await asyncio.to_thread(get_memory)
     yield
 
 
@@ -30,68 +38,72 @@ app = FastAPI(lifespan=lifespan)
 
 
 class AddRequest(BaseModel):
-    messages: list[dict] | None = None
-    text: str | None = None
+    messages: Optional[list] = None
+    text: Optional[str] = None
     user_id: str
-    metadata: dict | None = None
+    metadata: Optional[dict] = None
 
 
 @app.get("/health")
-def health():
+async def health():
     return {"ok": True, "provider": "mem0"}
 
 
 @app.post("/add")
-def add_memory(req: AddRequest):
+async def add_memory(req: AddRequest):
     m = get_memory()
     if req.text:
-        result = m.add(req.text, user_id=req.user_id, metadata=req.metadata)
+        result = await asyncio.to_thread(m.add, req.text, user_id=req.user_id, metadata=req.metadata)
     elif req.messages:
-        result = m.add(req.messages, user_id=req.user_id, metadata=req.metadata)
+        result = await asyncio.to_thread(m.add, req.messages, user_id=req.user_id, metadata=req.metadata)
     else:
         return JSONResponse({"error": "Provide messages or text"}, status_code=400)
     return result
 
 
 @app.get("/search")
-def search_memories(
+async def search_memories(
     query: str,
     user_id: str,
     limit: int = Query(default=10),
 ):
-    results = get_memory().search(query, user_id=user_id, limit=limit)
+    results = await asyncio.to_thread(get_memory().search, query, user_id=user_id, limit=limit)
     if isinstance(results, dict):
         return {"results": results.get("results", [])}
     return {"results": results}
 
 
 @app.get("/memories")
-def get_all(user_id: str):
-    result = get_memory().get_all(user_id=user_id)
+async def get_all(user_id: str):
+    result = await asyncio.to_thread(get_memory().get_all, user_id=user_id)
     if isinstance(result, dict):
         return {"memories": result.get("results", [])}
     return {"memories": result}
 
 
 @app.delete("/memories/{memory_id}")
-def delete_memory(memory_id: str):
-    get_memory().delete(memory_id)
+async def delete_memory(memory_id: str, user_id: str = Query(...)):
+    m = get_memory()
+    mem = await asyncio.to_thread(m.get, memory_id)
+    if not mem or mem.get("user_id") != user_id:
+        return JSONResponse({"error": "Memory not found or not owned by user"}, status_code=404)
+    await asyncio.to_thread(m.delete, memory_id)
     return {"ok": True}
 
 
 @app.delete("/memories")
-def delete_all(user_id: str):
-    get_memory().delete_all(user_id=user_id)
+async def delete_all(user_id: str):
+    await asyncio.to_thread(get_memory().delete_all, user_id=user_id)
     return {"ok": True}
 
 
 @app.get("/graph")
-def graph_search(
+async def graph_search(
     query: str,
     user_id: str,
     limit: int = Query(default=10),
 ):
-    results = get_memory().search(query, user_id=user_id, limit=limit)
+    results = await asyncio.to_thread(get_memory().search, query, user_id=user_id, limit=limit)
     relations = []
     if isinstance(results, dict) and "relations" in results:
         relations = results["relations"] or []
@@ -99,13 +111,13 @@ def graph_search(
 
 
 @app.get("/graph/deep")
-def graph_deep_search(
+async def graph_deep_search(
     query: str,
     user_id: str,
     max_hops: int = Query(default=2),
 ):
     m = get_memory()
-    search_result = m.search(query, user_id=user_id, limit=5)
+    search_result = await asyncio.to_thread(m.search, query, user_id=user_id, limit=5)
     relations = []
     if isinstance(search_result, dict):
         relations = search_result.get("relations", []) or []
@@ -117,13 +129,13 @@ def graph_deep_search(
     seed_entities.discard("")
 
     if not seed_entities:
-        seed_entities = {w.lower().replace(" ", "_") for w in query.split()}
+        return {"entities": [], "relationships": []}
 
     graph_conn = None
     if hasattr(m, "graph") and m.graph:
         graph_conn = m.graph.graph
 
-    return bfs_traverse(graph_conn, list(seed_entities), user_id, max_hops)
+    return await asyncio.to_thread(bfs_traverse, graph_conn, list(seed_entities), user_id, max_hops)
 
 
 if __name__ == "__main__":

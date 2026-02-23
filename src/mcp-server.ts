@@ -143,21 +143,5 @@ server.tool(
   }
 )
 
-server.tool(
-  "memory_profile",
-  "Get user's biographical profile: name, location, job, relationships, preferences. Extracted from personal memories. Use at session start to personalize responses.",
-  {},
-  async () => {
-    const result = await ragGet(`/profile/${encodeURIComponent(PERSONAL_CONTAINER)}`) as { facts: string[] }
-
-    if (!result.facts || result.facts.length === 0) {
-      return { content: [{ type: "text" as const, text: "No profile data found." }] }
-    }
-
-    const text = result.facts.map(f => `- ${f}`).join("\n")
-    return { content: [{ type: "text" as const, text }] }
-  }
-)
-
 const transport = new StdioServerTransport()
 await server.connect(transport)

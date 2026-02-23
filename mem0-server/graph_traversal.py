@@ -1,7 +1,13 @@
+from __future__ import annotations
+
+import logging
 from collections import deque
+from typing import List, Dict
+
+log = logging.getLogger(__name__)
 
 
-def bfs_traverse(graph_conn, seed_entities: list[str], user_id: str, max_hops: int = 2) -> dict:
+def bfs_traverse(graph_conn, seed_entities: List[str], user_id: str, max_hops: int = 2) -> dict:
     if not graph_conn:
         return {"entities": [], "relationships": []}
 
@@ -37,12 +43,11 @@ def bfs_traverse(graph_conn, seed_entities: list[str], user_id: str, max_hops: i
     }
 
 
-def _get_neighbors(graph_conn, entity_name: str, user_id: str) -> list[dict]:
+def _get_neighbors(graph_conn, entity_name: str, user_id: str) -> List[Dict]:
     neighbors = []
     try:
-        # outgoing edges
         result = graph_conn.execute(
-            "MATCH (a:Entity {user_id: $uid})-[r:CONNECTED_TO]->(b:Entity) "
+            "MATCH (a:Entity {user_id: $uid})-[r:CONNECTED_TO]->(b:Entity {user_id: $uid}) "
             "WHERE a.name = $name "
             "RETURN a.name AS source, r.name AS rel, b.name AS target",
             {"name": entity_name, "uid": user_id},
@@ -55,7 +60,6 @@ def _get_neighbors(graph_conn, entity_name: str, user_id: str) -> list[dict]:
                 "target": row["target"],
             })
 
-        # incoming edges
         result = graph_conn.execute(
             "MATCH (a:Entity {user_id: $uid})-[r:CONNECTED_TO]->(b:Entity {user_id: $uid}) "
             "WHERE b.name = $name "
@@ -69,13 +73,13 @@ def _get_neighbors(graph_conn, entity_name: str, user_id: str) -> list[dict]:
                 "relationship": row["rel"],
                 "target": row["target"],
             })
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("graph query failed for entity=%s: %s", entity_name, e)
 
     return neighbors
 
 
-def _dedup_entities(entities: list[dict]) -> list[dict]:
+def _dedup_entities(entities: List[Dict]) -> List[Dict]:
     seen = set()
     result = []
     for e in entities:
@@ -85,7 +89,7 @@ def _dedup_entities(entities: list[dict]) -> list[dict]:
     return result
 
 
-def _dedup_relationships(rels: list[dict]) -> list[dict]:
+def _dedup_relationships(rels: List[Dict]) -> List[Dict]:
     seen = set()
     result = []
     for r in rels:

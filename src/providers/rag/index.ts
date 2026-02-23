@@ -19,8 +19,18 @@ import { EntityGraph } from "./graph"
 import type { SerializedGraph, GraphSearchResult } from "./graph"
 import { ContainerLock } from "./lock"
 import { loadConfig, type RAGConfig } from "./config"
+import type { PgStore } from "./pg"
 
 const EMBEDDING_BATCH_SIZE = 100
+const QUERY_CACHE_TTL = 60_000
+const QUERY_CACHE_MAX = 200
+
+interface CachedEmbedding {
+  embedding: number[]
+  ts: number
+}
+
+const queryEmbeddingCache = new Map<string, CachedEmbedding>()
 
 function chunkText(text: string, chunkSize: number, overlap: number): string[] {
   if (text.length <= chunkSize) {
@@ -73,8 +83,29 @@ export class RAGProvider implements Provider {
   private apiKey: string = ""
   private containerLock = new ContainerLock()
   private cacheLoading = new Map<string, Promise<boolean>>()
-  private pgStore: any = null
+  private pgStore: PgStore | null = null
   cfg: RAGConfig = loadConfig()
+
+  private async getQueryEmbedding(embeddingModel: ReturnType<ReturnType<typeof createOpenAI>["embedding"]>, query: string): Promise<number[]> {
+    const now = Date.now()
+    const cached = queryEmbeddingCache.get(query)
+    if (cached && now - cached.ts < QUERY_CACHE_TTL) return cached.embedding
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const result = await embed({ model: embeddingModel, value: query })
+        queryEmbeddingCache.set(query, { embedding: result.embedding, ts: now })
+        if (queryEmbeddingCache.size > QUERY_CACHE_MAX) {
+          const oldest = queryEmbeddingCache.keys().next().value!
+          queryEmbeddingCache.delete(oldest)
+        }
+        return result.embedding
+      } catch (e) {
+        if (attempt >= 2) throw e
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
+      }
+    }
+  }
 
   private getGraph(containerTag: string): EntityGraph {
     if (!this.graphs.has(containerTag)) {
@@ -245,28 +276,38 @@ export class RAGProvider implements Provider {
           await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
         }
       }
-      throw new Error("unreachable")
     }
 
+    const totalBatches = Math.ceil(allChunks.length / EMBEDDING_BATCH_SIZE)
+    const CONCURRENT_BATCHES = 2
     const embedded: Chunk[] = []
-    for (let i = 0; i < allChunks.length; i += EMBEDDING_BATCH_SIZE) {
-      const batch = allChunks.slice(i, i + EMBEDDING_BATCH_SIZE)
-      const embeddings = await embedBatch(batch.map((c) => c.text))
 
-      for (let j = 0; j < batch.length; j++) {
-        const chunk = batch[j]
-        embedded.push({
-          id: `${options.containerTag}_${chunk.sessionId}_${chunk.chunkIndex}`,
-          content: chunk.text,
-          sessionId: chunk.sessionId,
-          chunkIndex: chunk.chunkIndex,
-          embedding: embeddings[j],
-          date: chunk.date,
-          metadata: chunk.metadata,
-        })
+    for (let i = 0; i < totalBatches; i += CONCURRENT_BATCHES) {
+      const batchPromises: Promise<{ embeddings: number[][]; batch: typeof allChunks }>[] = []
+      for (let j = i; j < Math.min(i + CONCURRENT_BATCHES, totalBatches); j++) {
+        const start = j * EMBEDDING_BATCH_SIZE
+        const batch = allChunks.slice(start, start + EMBEDDING_BATCH_SIZE)
+        batchPromises.push(
+          embedBatch(batch.map((c) => c.text)).then((embeddings) => ({ embeddings, batch }))
+        )
       }
 
-      logger.debug(`Embedded chunk batch ${Math.floor(i / EMBEDDING_BATCH_SIZE) + 1}/${Math.ceil(allChunks.length / EMBEDDING_BATCH_SIZE)} (${batch.length} chunks)`)
+      const results = await Promise.all(batchPromises)
+      for (const { embeddings, batch } of results) {
+        for (let j = 0; j < batch.length; j++) {
+          const chunk = batch[j]
+          embedded.push({
+            id: `${options.containerTag}_${chunk.sessionId}_${chunk.chunkIndex}`,
+            content: chunk.text,
+            sessionId: chunk.sessionId,
+            chunkIndex: chunk.chunkIndex,
+            embedding: embeddings[j],
+            date: chunk.date,
+            metadata: chunk.metadata,
+          })
+        }
+      }
+      logger.debug(`Embedded batches ${i + 1}-${Math.min(i + CONCURRENT_BATCHES, totalBatches)}/${totalBatches}`)
     }
 
     if (this.pgStore) {
@@ -312,17 +353,7 @@ export class RAGProvider implements Provider {
     }
 
     const embeddingModel = this.openai.embedding(this.cfg.embeddingModel)
-    let queryEmbedding: number[]
-    for (let attempt = 0; ; attempt++) {
-      try {
-        const result = await embed({ model: embeddingModel, value: searchQuery })
-        queryEmbedding = result.embedding
-        break
-      } catch (e) {
-        if (attempt >= 2) throw e
-        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)))
-      }
-    }
+    const queryEmbedding = await this.getQueryEmbedding(embeddingModel, searchQuery)
 
     const limit = options.limit || 10
     const overfetchLimit = this.cfg.enableReranker ? Math.max(limit, this.cfg.rerankOverfetch) : limit
@@ -377,13 +408,13 @@ export class RAGProvider implements Provider {
 
       const subResultsArrays = await Promise.all(
         subQueries.slice(1).map(async (subQuery) => {
-          const subEmbed = await embed({ model: embeddingModel, value: subQuery })
+          const subEmbedding = await this.getQueryEmbedding(embeddingModel, subQuery)
           if (this.pgStore) {
-            return this.pgStore.search(options.containerTag, subEmbed.embedding, subQuery, overfetchLimit)
+            return this.pgStore.search(options.containerTag, subEmbedding, subQuery, overfetchLimit)
           }
           await this.containerLock.readLock(options.containerTag)
           try {
-            return this.searchEngine.search(options.containerTag, subEmbed.embedding, subQuery, overfetchLimit)
+            return this.searchEngine.search(options.containerTag, subEmbedding, subQuery, overfetchLimit)
           } finally {
             this.containerLock.readUnlock(options.containerTag)
           }

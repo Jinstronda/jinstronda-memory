@@ -13,3 +13,6 @@ ui/node_modules/
 ui/.next/
 ui/tsconfig.tsbuildinfo
 .DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/

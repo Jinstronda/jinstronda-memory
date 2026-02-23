@@ -43,6 +43,7 @@ async function handleIngest(req: Request): Promise<Response> {
   if (!body.containerTag || !body.sessionId || !body.messages?.length) {
     return errResponse("containerTag, sessionId, and messages required", 400)
   }
+  if (!/^[a-zA-Z0-9_-]+$/.test(body.containerTag)) return errResponse("Invalid containerTag", 400)
 
   const messages: UnifiedMessage[] = body.messages.map((m) => ({
     role: m.role,
@@ -69,6 +70,7 @@ async function handleSearch(req: Request): Promise<Response> {
   if (!body.containerTag || !body.query) {
     return errResponse("containerTag and query required", 400)
   }
+  if (!/^[a-zA-Z0-9_-]+$/.test(body.containerTag)) return errResponse("Invalid containerTag", 400)
 
   const raw = await provider.search(body.query, {
     containerTag: body.containerTag,
@@ -94,6 +96,7 @@ async function handleStore(req: Request): Promise<Response> {
   if (!body.containerTag || !body.text) {
     return errResponse("containerTag and text required", 400)
   }
+  if (!/^[a-zA-Z0-9_-]+$/.test(body.containerTag)) return errResponse("Invalid containerTag", 400)
 
   const session: UnifiedSession = {
     sessionId: `manual_${Date.now()}`,
@@ -156,7 +159,9 @@ Bun.serve({
 
       const clearMatch = url.pathname.match(/^\/clear\/(.+)$/)
       if (req.method === "DELETE" && clearMatch) {
-        return await handleClear(decodeURIComponent(clearMatch[1]))
+        const tag = decodeURIComponent(clearMatch[1])
+        if (!/^[a-zA-Z0-9_-]+$/.test(tag)) return errResponse("Invalid containerTag", 400)
+        return await handleClear(tag)
       }
 
       return errResponse("Not found", 404)

@@ -1,12 +1,4 @@
 import pytest
-from httpx import AsyncClient, ASGITransport
-from server import app
-
-
-@pytest.fixture
-def client():
-    transport = ASGITransport(app=app)
-    return AsyncClient(transport=transport, base_url="http://test")
 
 
 @pytest.mark.asyncio
@@ -69,7 +61,7 @@ async def test_delete(client):
     memories = result.json().get("results", [])
     if memories:
         mid = memories[0]["id"]
-        r = await client.delete(f"/memories/{mid}")
+        r = await client.delete(f"/memories/{mid}", params={"user_id": "test_delete"})
         assert r.status_code == 200
 
 

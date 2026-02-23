@@ -9,7 +9,6 @@
  * All data is stored in-memory per container for fast access during benchmarking.
  */
 
-// ─── Types ───────────────────────────────────────────────────────────────────
 
 export interface Chunk {
   id: string
@@ -35,7 +34,6 @@ export interface SearchResult {
   metadata?: Record<string, unknown>
 }
 
-// ─── Tokenizer ───────────────────────────────────────────────────────────────
 
 const STOP_WORDS = new Set([
   "a",
@@ -158,7 +156,6 @@ function tokenize(text: string): string[] {
     .filter((t) => t.length > 1 && !STOP_WORDS.has(t))
 }
 
-// ─── BM25 Index ──────────────────────────────────────────────────────────────
 
 const BM25_K1 = 1.2
 const BM25_B = 0.75
@@ -234,7 +231,6 @@ function searchBM25(index: BM25Index, query: string): Map<string, number> {
   return scores
 }
 
-// ─── Vector Search ───────────────────────────────────────────────────────────
 
 function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0
@@ -255,7 +251,20 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dot / denominator
 }
 
-// ─── Hybrid Search Engine ────────────────────────────────────────────────────
+function partialSort<T extends { score: number }>(arr: T[], k: number): void {
+  for (let i = 0; i < k && i < arr.length; i++) {
+    let maxIdx = i
+    for (let j = i + 1; j < arr.length; j++) {
+      if (arr[j].score > arr[maxIdx].score) maxIdx = j
+    }
+    if (maxIdx !== i) {
+      const tmp = arr[i]
+      arr[i] = arr[maxIdx]
+      arr[maxIdx] = tmp
+    }
+  }
+}
+
 
 /** Weight for vector similarity in hybrid score */
 const VECTOR_WEIGHT = 0.7
@@ -294,66 +303,47 @@ export class HybridSearchEngine {
     const container = this.containers.get(containerTag)
     if (!container || container.chunks.size === 0) return []
 
-    // BM25 keyword scores
     const bm25Scores = searchBM25(container.bm25Index, query)
 
-    // Vector similarity scores
-    const vectorScores = new Map<string, number>()
-    for (const [chunkId, chunk] of container.chunks) {
-      const sim = cosineSimilarity(queryEmbedding, chunk.embedding)
-      vectorScores.set(chunkId, sim)
-    }
-
-    // Normalize BM25 scores to 0-1 range
     let maxBM25 = 0
     for (const score of bm25Scores.values()) {
       if (score > maxBM25) maxBM25 = score
     }
+    const bm25Norm = maxBM25 > 0 ? 1 / maxBM25 : 0
 
-    const normalizedBM25 = new Map<string, number>()
-    for (const [chunkId, score] of bm25Scores) {
-      normalizedBM25.set(chunkId, maxBM25 > 0 ? score / maxBM25 : 0)
-    }
+    const scored: Array<{ chunk: Chunk; score: number; vectorScore: number; bm25Score: number }> = []
 
-    // Compute hybrid scores
-    const hybridScores: Array<{
-      chunkId: string
-      score: number
-      vectorScore: number
-      bm25Score: number
-    }> = []
-
-    for (const [chunkId] of container.chunks) {
-      const vs = vectorScores.get(chunkId) || 0
-      const bs = normalizedBM25.get(chunkId) || 0
+    for (const [chunkId, chunk] of container.chunks) {
+      const vs = cosineSimilarity(queryEmbedding, chunk.embedding)
+      const rawBm25 = bm25Scores.get(chunkId) || 0
+      const bs = rawBm25 * bm25Norm
       const hybrid = VECTOR_WEIGHT * vs + BM25_WEIGHT * bs
-
-      hybridScores.push({
-        chunkId,
-        score: hybrid,
-        vectorScore: vs,
-        bm25Score: bs,
-      })
+      scored.push({ chunk, score: hybrid, vectorScore: vs, bm25Score: bs })
     }
 
-    // Sort by hybrid score descending
-    hybridScores.sort((a, b) => b.score - a.score)
+    if (limit < scored.length) {
+      partialSort(scored, limit)
+    } else {
+      scored.sort((a, b) => b.score - a.score)
+    }
 
-    // Return top results
-    return hybridScores.slice(0, limit).map((result) => {
-      const chunk = container.chunks.get(result.chunkId)!
-      return {
-        content: chunk.content,
-        score: result.score,
-        vectorScore: result.vectorScore,
-        bm25Score: result.bm25Score,
-        sessionId: chunk.sessionId,
-        chunkIndex: chunk.chunkIndex,
-        date: chunk.date,
-        eventDate: chunk.eventDate,
-        metadata: chunk.metadata,
+    const n = Math.min(limit, scored.length)
+    const results: SearchResult[] = new Array(n)
+    for (let i = 0; i < n; i++) {
+      const s = scored[i]
+      results[i] = {
+        content: s.chunk.content,
+        score: s.score,
+        vectorScore: s.vectorScore,
+        bm25Score: s.bm25Score,
+        sessionId: s.chunk.sessionId,
+        chunkIndex: s.chunk.chunkIndex,
+        date: s.chunk.date,
+        eventDate: s.chunk.eventDate,
+        metadata: s.chunk.metadata,
       }
-    })
+    }
+    return results
   }
 
   save(containerTag: string): { chunks: Chunk[]; bm25: SerializedBM25 } | null {
