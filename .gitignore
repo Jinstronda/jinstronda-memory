@@ -16,3 +16,4 @@ ui/tsconfig.tsbuildinfo
 __pycache__/
 *.pyc
 .pytest_cache/
+mem0-server/data/

@@ -6,7 +6,7 @@ def get_mem0_config(data_dir: str = "./data") -> dict:
         "llm": {
             "provider": "openai",
             "config": {
-                "model": os.getenv("MEM0_LLM_MODEL", "gpt-5-mini"),
+                "model": os.getenv("MEM0_LLM_MODEL", "gpt-5-nano"),
                 "api_key": os.getenv("OPENAI_API_KEY"),
             },
         },
