@@ -23,6 +23,7 @@ sqlite3.connect = _patched_connect
 from mem0 import Memory
 from config import get_mem0_config
 from graph_traversal import bfs_traverse
+from graph_dedup import run_dedup
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("mem0-server")
@@ -67,10 +68,42 @@ def get_memory() -> Memory:
     return memory
 
 
+DEDUP_INTERVAL = int(os.getenv("GRAPH_DEDUP_INTERVAL", "300"))
+DEDUP_USER_ID = os.getenv("DEDUP_USER_ID", "openclaw_Joaos_MacBook_Pro_local")
+_dedup_running = False
+
+
+async def _scheduled_dedup():
+    global _dedup_running
+    while True:
+        await asyncio.sleep(DEDUP_INTERVAL)
+        if _dedup_running:
+            continue
+        _dedup_running = True
+        try:
+            m = get_memory()
+            if not (hasattr(m, "graph") and m.graph):
+                continue
+            graph_conn = m.graph.graph
+            log.info("scheduled dedup starting")
+            stats = await asyncio.to_thread(run_dedup, graph_conn, DEDUP_USER_ID)
+            total_cleaned = stats["garbage_deleted"] + stats["edges_deleted"]
+            if total_cleaned > 0:
+                log.info(f"scheduled dedup done: {stats}")
+            else:
+                log.info("scheduled dedup: nothing to clean")
+        except Exception as e:
+            log.error(f"scheduled dedup failed: {e}")
+        finally:
+            _dedup_running = False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await asyncio.to_thread(get_memory)
+    task = asyncio.create_task(_scheduled_dedup())
     yield
+    task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -205,6 +238,28 @@ async def graph_deep_search(
         graph_conn = m.graph.graph
 
     return await asyncio.to_thread(bfs_traverse, graph_conn, list(seed_entities), user_id, max_hops)
+
+
+class DedupRequest(BaseModel):
+    user_id: str
+    dry_run: bool = False
+
+
+@app.post("/graph/dedupe")
+async def graph_dedupe(req: DedupRequest):
+    global _dedup_running
+    if _dedup_running:
+        return JSONResponse({"error": "dedup already running"}, status_code=409)
+    _dedup_running = True
+    try:
+        m = get_memory()
+        if not (hasattr(m, "graph") and m.graph):
+            return JSONResponse({"error": "graph store not available"}, status_code=500)
+        graph_conn = m.graph.graph
+        stats = await asyncio.to_thread(run_dedup, graph_conn, req.user_id, req.dry_run)
+        return stats
+    finally:
+        _dedup_running = False
 
 
 if __name__ == "__main__":
