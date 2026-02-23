@@ -1,0 +1,6 @@
+mem0ai[graph]>=1.0.4
+fastapi>=0.115.0
+uvicorn>=0.34.0
+httpx>=0.28.0
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
