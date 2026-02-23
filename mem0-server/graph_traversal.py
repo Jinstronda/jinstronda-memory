@@ -57,7 +57,7 @@ def _get_neighbors(graph_conn, entity_name: str, user_id: str) -> list[dict]:
 
         # incoming edges
         result = graph_conn.execute(
-            "MATCH (a:Entity)-[r:CONNECTED_TO]->(b:Entity {user_id: $uid}) "
+            "MATCH (a:Entity {user_id: $uid})-[r:CONNECTED_TO]->(b:Entity {user_id: $uid}) "
             "WHERE b.name = $name "
             "RETURN a.name AS source, r.name AS rel, b.name AS target",
             {"name": entity_name, "uid": user_id},

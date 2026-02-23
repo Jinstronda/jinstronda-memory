@@ -1,6 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from mem0 import Memory
 from config import get_mem0_config
@@ -48,7 +49,7 @@ def add_memory(req: AddRequest):
     elif req.messages:
         result = m.add(req.messages, user_id=req.user_id, metadata=req.metadata)
     else:
-        return {"error": "Provide messages or text"}, 400
+        return JSONResponse({"error": "Provide messages or text"}, status_code=400)
     return result
 
 
